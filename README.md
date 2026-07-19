@@ -1,73 +1,108 @@
-# bundle-the-usual
+# The Usual
 
-An [Amplifier](https://github.com/microsoft/amplifier) bundle providing
-**"the usual"** — a rigorous, self-contained development workflow, invoked by
-saying things like *"implement X with the usual"*.
+**A disciplined, review-heavy way to have an AI build software for you.**
 
-## What it does
-
-One recipe (`recipes/the-usual.yaml`) drives seven stages, end to end, with
-loud progress banners and no routine approval gates (it halts only on serious
-issues):
-
-1. **Workspace** — dedicated git worktree under `.worktrees/<slug>/`
-2. **Plan** — zero-context, no-placeholder TDD implementation plan with
-   bite-sized tasks and a self-review pass
-3. **Load-bearing validation** — enumerates the falsifiable assumptions the
-   plan depends on (stateful finder + strategist, parallel stateless
-   validators); unverifiable assumptions get an explicit `acceptable`
-   decision after alternatives are tried
-4. **Fresh eyes on the plan** — independent zero-context review by a
-   *different model family*, up to 3 iterations or until it passes
-5. **Execute** — subagent-driven development: fresh implementer per task,
-   spec review per task, durable progress ledger
-6. **Fresh eyes on the delta** — independent cross-model review of the full
-   diff vs the original fork point, up to 5 iterations or until it passes
-7. **Recap** — what was found at each stage, plus a low-jargon summary of
-   what was built
-
-## Install
-
-```bash
-amplifier bundle add git+https://github.com/danshapiro/bundle-the-usual@main --name the-usual
-amplifier bundle use the-usual
-```
-
-Or layer just the behavior onto your existing bundle stack — add to
-`bundle.app` in `~/.amplifier/settings.yaml`:
-
-```yaml
-bundle:
-  app:
-    - git+https://github.com/danshapiro/bundle-the-usual@main#subdirectory=behaviors/the-usual.yaml
-```
-
-(For local development, a local path works in either place, e.g.
-`/path/to/bundle-the-usual/behaviors/the-usual.yaml`.)
-
-## Use
-
-In any session with the bundle composed:
+"The usual" is an add-on for [Amplifier](https://github.com/microsoft/amplifier),
+a command-line AI assistant from Microsoft. Once installed, you can say things
+like:
 
 > implement tetris with the usual in a subdirectory
 
-Or run the recipe directly:
+…and instead of the AI just writing code and hoping for the best, it runs a
+rigorous end-to-end process: plan, verify assumptions, get independently
+reviewed by a *different* AI, build test-first, get reviewed again, and report
+back in plain language.
+
+## What actually happens
+
+When you ask for something "with the usual", the assistant works through seven
+stages, printing a big banner as it enters each long-running one:
+
+1. **Safe workspace** — work happens on an isolated branch in a dedicated
+   folder inside your project. Nothing you have is touched until you decide to
+   merge the result.
+2. **Plan** — it writes a detailed, step-by-step implementation plan with
+   tests planned first, small tasks, exact file paths, and no hand-waving
+   ("add error handling later" is not allowed).
+3. **Check the risky assumptions** — it identifies the claims the plan quietly
+   depends on ("this library supports X", "the config lives in Y") and
+   verifies each with real evidence: running code, reading source, checking
+   documentation. If something can't be verified, it tries alternative
+   approaches and picks the most defensible path, recording its reasoning.
+4. **Independent plan review** — the plan is reviewed by a second AI from a
+   different company, with zero knowledge of the conversation so far (fresh
+   eyes, no groupthink). Problems get fixed and re-reviewed, up to 3 rounds.
+5. **Build** — implementation happens one small task at a time, test-first,
+   with each task's output checked against the plan before moving on.
+6. **Independent review of the result** — the complete set of changes gets
+   the same fresh-eyes treatment, up to 5 rounds, until it passes.
+7. **Recap** — you get a report of what was found at every stage plus a
+   jargon-free summary of what was built, and options for merging it.
+
+It only stops mid-run for serious problems (for example, anything that risks
+data loss). Everything else is handled and reported at the end.
+
+## Install
+
+1. **Install Amplifier** — follow the instructions at
+   [github.com/microsoft/amplifier](https://github.com/microsoft/amplifier).
+2. **Add this package:**
+
+   ```bash
+   amplifier bundle add git+https://github.com/danshapiro/bundle-the-usual@main --name the-usual
+   amplifier bundle use the-usual
+   ```
+
+   Already have a customized Amplifier setup you don't want to replace? Layer
+   just the trigger onto it instead — add this line under `bundle.app` in
+   `~/.amplifier/settings.yaml`:
+
+   ```yaml
+   bundle:
+     app:
+       - git+https://github.com/danshapiro/bundle-the-usual@main#subdirectory=behaviors/the-usual.yaml
+   ```
+
+## Use
+
+Start Amplifier (`amplifier`) and ask for work "with the usual":
+
+> implement a markdown-to-html converter with the usual in a subdirectory
+
+- If the target isn't an existing git project, it tells you exactly what
+  folder it wants to create and asks for your OK first.
+- Long stages announce themselves with unmissable banners, so you can tell
+  where the run is at a glance.
+- If a run is interrupted, it can resume where it left off rather than
+  starting over.
+
+You can also skip the conversation and run it directly:
 
 ```bash
 amplifier tool invoke recipes operation=execute \
   recipe_path=@the-usual:recipes/the-usual.yaml \
-  context='{"task": "<spec text or path>", "repo_path": "/abs/path/to/repo"}'
+  context='{"task": "describe what to build, or a path to a spec file", "repo_path": "/absolute/path/to/your/git/repo"}'
 ```
 
-Optional context overrides: `reviewer_provider` / `reviewer_model`
-(defaults `openai` / `gpt-*`) select the independent cross-model reviewer —
-configure at least two provider families for the fresh-eyes stages to be
-meaningful.
+## What you need
 
-## Requirements
+- **git** — the isolated-workspace stage uses git branches and worktrees.
+- **Two AI provider accounts** (for example Anthropic + OpenAI), configured in
+  Amplifier. The independent reviews deliberately use a different AI company
+  than the one doing the work — that separation is the point. By default the
+  work is done by whatever model your session runs and reviews go to OpenAI;
+  override with the `reviewer_provider` / `reviewer_model` options if your
+  setup is reversed.
 
-- The `recipes` tool (included via this bundle's dependency on
-  `amplifier-bundle-recipes`; already present in most Amplifier setups)
-- `git` (worktrees are used for isolation)
-- Two configured provider families (e.g. Anthropic + OpenAI) for
-  cross-model review
+## What's in this repository
+
+| Path | What it is |
+|---|---|
+| `recipes/the-usual.yaml` | The workflow itself — every stage, rule, and review prompt |
+| `context/the-usual-instructions.md` | Teaches the assistant to recognize "with the usual" |
+| `behaviors/the-usual.yaml` | The hook that loads those instructions into your sessions |
+| `bundle.md` | The package definition Amplifier installs |
+
+## License
+
+MIT — see [LICENSE](LICENSE).
