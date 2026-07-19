@@ -1,0 +1,8 @@
+bundle:
+  name: the-usual-behavior
+  version: 1.0.0
+  description: Awareness for invoking "the usual" development workflow recipe
+
+context:
+  include:
+    - the-usual:context/the-usual-instructions.md

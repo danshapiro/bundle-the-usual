@@ -1,0 +1,2129 @@
+# =============================================================================
+# "the usual" — Dan's standard development workflow, as an Amplifier recipe
+# =============================================================================
+#
+# THIS FILE IS NOW THE CANONICAL HOME OF THE WORKFLOW.
+#
+# The methodology below was transplanted (one time, 2026-07-19) from Dan's
+# customized skill files under ~/.codex/skills/ — writing-plans, load-bearing
+# (+ references/subagent-prompts.md), fresheyes (fresheyes-prompt.md),
+# executing-plans, and subagent-driven-development (+ implementer-prompt.md,
+# task-reviewer-prompt.md, scripts/task-brief, scripts/review-package).
+# The full content of those files is INLINED into the step prompts, adapted for
+# Amplifier only where the original text was platform-specific (subagent
+# dispatch -> delegate tool; shell/PID-polling machinery -> context_depth +
+# provider_preferences; script files -> inline bash). No step reads anything
+# from ~/.codex/skills/ at runtime.
+#
+# EDITS TO THE WORKFLOW SHOULD NOW BE MADE HERE, not in the old skill files.
+#
+# Two skills are still loaded by name at runtime because Dan's copies are
+# byte-identical to the stock superpowers versions (verified by diff), so the
+# stock skill IS his version: using-git-worktrees (Step 0) and
+# requesting-code-review (final whole-branch review template in Step 4).
+#
+# The 7-stage workflow (verbatim semantics from Dan's ~/.codex/AGENTS.md):
+#   1. writing-plans -> write a plan
+#   2. load-bearing on the plan; fix what comes up
+#   3. fresheyes on the plan, fix, until PASS or 3x
+#   4. executing-plans -> execute the plan
+#   5. fresheyes on the delta (worktree vs original fork) until PASS or 5x
+#   6. halt only on a serious data-loss/confusion issue
+#   7. else end with a per-stage recap + low-jargon summary of what was built
+#
+# Cross-model review is a first-class parameter here (context_depth="none" +
+# provider_preferences on the delegate call), so none of fresheyes' original
+# shell/setsid/PID-polling machinery is needed — the executor is Anthropic,
+# the reviewer defaults to GPT.
+#
+# =============================================================================
+# CHANGELOG
+# =============================================================================
+#
+# v2.1.0 (2026-07-19):
+#   - CHANGED: residual-risk semantics. Ledger status `accepted-risk` renamed to
+#     `acceptable`; the MODEL adjudicates acceptability mid-run (no deferral to
+#     the user). When no path is verified, the goal is the MOST ACCEPTABLE path:
+#     generate alternatives, evaluate them cheaply (verifiable alternative beats
+#     unverifiable incumbent), pick the best, record alternatives + rationale in
+#     the ledger, update the plan. Data-loss/corruption HALT rule unchanged and
+#     takes precedence. Step 2 output field residual_risk_summary renamed to
+#     acceptable_decisions; recap frames these as decisions made, not items
+#     awaiting adjudication.
+#   - NEW FEATURE: mandatory progress banners at long transitions (fixed
+#     policy, no executor discretion): stage starts (1, 2, 4), Step 2 validator
+#     wave, each fresheyes iteration (3, 5), each Step 4 task dispatch, and the
+#     final whole-branch review. Quick transitions explicitly unannounced
+#     (workspace setup, guards, commits, bookkeeping, recap).
+#
+# v2.0.0 (2026-07-19):
+#   - BREAKING REDESIGN: fully self-contained. All skill content INLINED into
+#     step prompts (Dan rejected the runtime-file-read design). The recipe is
+#     now the single canonical home of the workflow; ~/.codex/skills/ files
+#     were the one-time source.
+#     * Step 1 carries the complete writing-plans methodology (incl. Self-Review
+#       item 1b), minus the Execution Handoff (the recipe fixes the path).
+#     * Step 2 carries the complete load-bearing methodology + the three
+#       verbatim subagent prompt templates (finder/strategist/validator).
+#     * Steps 3/5 carry the complete fresheyes reviewer prompt verbatim with
+#       the review scope pre-substituted (plan / base_ref...HEAD delta).
+#     * Step 4 carries executing-plans + the full subagent-driven-development
+#       methodology, both dispatch prompt templates verbatim, and the logic of
+#       scripts/task-brief and scripts/review-package as inline bash.
+#
+# v1.0.0 (2026-07-18):
+#   - Initial port using runtime reads of ~/.codex/skills/ files (superseded).
+#
+# =============================================================================
+
+name: "the-usual"
+description: "Dan's standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
+version: "2.1.0"
+author: "ported for Dan by recipes:recipe-author"
+tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
+
+context:
+  # ---- Required inputs -------------------------------------------------------
+  task: ""            # REQUIRED: the spec/requirements text, OR an absolute path to a spec file.
+  repo_path: ""       # REQUIRED: absolute path to the target git repository.
+
+  # ---- Optional inputs (cross-model reviewer; must differ from executor) ------
+  reviewer_provider: "openai"   # executor is Anthropic -> reviewer defaults to a different family (GPT)
+  reviewer_model: "gpt-*"       # glob; latest GPT is auto-selected
+
+  # ---- Loop-state flags (managed via update_context; do not set at runtime) ---
+  plan_passed: "false"          # set true when the plan clears fresheyes
+  delta_passed: "false"         # set true when the delta clears fresheyes
+
+steps:
+  # ===========================================================================
+  # STEP 0 — Workspace: isolated git worktree + record the "original fork" ref
+  #
+  # NOTE: this step loads using-git-worktrees by NAME. That is deliberate and
+  # safe: Dan's copy of that skill is byte-identical to stock, so the stock
+  # skill IS his version. Everything else in this recipe is inlined.
+  # ===========================================================================
+  - id: "workspace-setup"
+    # The agent that executes this step's instructions (this stage's worker).
+    agent: "foundation:zen-architect"
+    timeout: 900
+    output: "workspace"
+    parse_json: true
+    prompt: |
+      You are setting up an isolated workspace for a development workflow. Follow
+      Dan's workspace discipline exactly. Do NOT substitute your own conventions.
+
+      Inputs:
+      - Target repo: {{repo_path}}
+      - Task (spec text, or an absolute path to a spec file): {{task}}
+
+      Do this:
+      1. Load the using-git-worktrees skill: load_skill("using-git-worktrees").
+         Follow it to create a dedicated worktree.
+      2. Derive a short kebab-case slug for this feature from the task (if `task`
+         is a path to a file, read the file first to derive a sensible slug from
+         its title/subject; otherwise derive from the task text).
+      3. Ensure the worktree lives UNDER the repo's own `.worktrees/<slug>/`
+         directory, and ensure `.worktrees/` is ignored.
+         Prefer adding `.worktrees/` to `{{repo_path}}/.git/info/exclude` (local,
+         no tracked-file changes) rather than committing a .gitignore edit, unless
+         the repo already ignores it.
+      4. Record the CURRENT commit of the branch the worktree is based on, BEFORE
+         any new commits. This SHA is the "original fork" point that Step 5's
+         delta review will diff against. Capture it with:
+         `git -C <worktree_path> rev-parse HEAD`.
+      5. Create a logs directory OUTSIDE the worktree's tracked tree (so review
+         logs never appear in any diff): `{{repo_path}}/.worktrees/.the-usual-logs/<slug>/`.
+         Create it with `mkdir -p`. This is where later stages append their findings.
+
+      Cross-cutting rules (complete as stated — apply throughout):
+      - Preserve unrelated changes from other agents in the same repo — never
+        clobber work you did not author.
+      - Do NOT start implementation on main/master.
+
+      Progress banners: do NOT print a progress banner for this step —
+      workspace setup is quick and unannounced (banners begin at Stage 1).
+
+      Then return ONLY a JSON object (no prose, no markdown fences) with exactly:
+      {
+        "worktree_path": "<absolute path to the worktree working tree>",
+        "branch": "<branch name checked out in the worktree>",
+        "base_ref": "<the recorded original-fork commit SHA>",
+        "slug": "<the feature slug>",
+        "logs_dir": "<absolute path to the logs directory you created>"
+      }
+
+  # ===========================================================================
+  # STEP 1 — Write the plan (full writing-plans methodology, inlined)
+  # ===========================================================================
+  - id: "write-plan"
+    # The agent that executes this step's instructions (this stage's worker).
+    agent: "foundation:zen-architect"
+    timeout: 2400
+    output: "plan"
+    parse_json: true
+    prompt: |
+      Write the implementation plan for this task by following the methodology
+      below EXACTLY. It is Dan's writing-plans discipline, inlined in full.
+
+      PROGRESS BANNER (mandatory, fixed policy — no discretion): FIRST, before
+      any other work, print the following banner as plain visible response text
+      (never inside a tool call, never in a file), with a blank line above
+      and below the block so it separates from surrounding output:
+
+      ==================================================================
+      ==================================================================
+      >>> THE USUAL | STAGE 1/6: WRITING THE PLAN
+      >>> Writing the full TDD implementation plan from the spec
+      >>> Single long writing pass plus self-review — this may take a while
+      ==================================================================
+      ==================================================================
+
+      Do not print any other banners in this step (commits and bookkeeping are
+      not announced).
+
+      Task/spec: {{task}}
+      (If `task` is an absolute path to a file, read that file for the full spec.)
+      Work inside the worktree: {{workspace.worktree_path}}
+
+      ==================== WRITING PLANS (METHODOLOGY) ====================
+
+      ## Overview
+
+      Write comprehensive implementation plans assuming the engineer has zero
+      context for our codebase and questionable taste. Document everything they
+      need to know: which files to touch for each task, code, testing, docs they
+      might need to check, how to test it. Give them the whole plan as bite-sized
+      tasks. DRY. YAGNI. TDD. Frequent commits.
+
+      Assume they are a skilled developer, but know almost nothing about our
+      toolset or problem domain. Assume they don't know good test design very well.
+
+      Your focus is on tests that prove the end user stories, more than unit
+      tests. Consider what proves that the results do what the ultimate end user
+      wants. Write tests at the highest level of abstraction possible.
+
+      **Context:** The isolated worktree was already created by this workflow's
+      workspace stage — write the plan inside it.
+
+      **Save plans to:** `docs/plans/YYYY-MM-DD-<feature-name>.md`
+      - (User preferences for plan location override this default)
+
+      ## Scope Check
+
+      If the spec covers multiple independent subsystems, suggest breaking this
+      into separate plans each with comprehensive test coverage — one per
+      subsystem. Each plan should produce working, testable software on its own.
+      Then, there should be test coverage for the system as a whole.
+
+      ## File Structure
+
+      Before defining tasks, map out which files will be created or modified and
+      what each one is responsible for. This is where decomposition decisions get
+      locked in.
+
+      - Design units with clear boundaries and well-defined interfaces. Each file
+        should have one clear responsibility.
+      - You reason best about code you can hold in context at once, and your
+        edits are more reliable when files are focused. Prefer smaller, focused
+        files over large ones that do too much.
+      - Files that change together should live together. Split by responsibility,
+        not by technical layer.
+      - In existing codebases, follow established patterns. If the codebase uses
+        large files, don't unilaterally restructure - but if a file you're
+        modifying has grown unwieldy, including a split in the plan is reasonable.
+
+      This structure informs the task decomposition. Each task should produce
+      self-contained changes that make sense independently.
+
+      ## Task Right-Sizing
+
+      A task is the smallest unit that carries its own test cycle and is worth a
+      fresh reviewer's gate. When drawing task boundaries: fold setup,
+      configuration, scaffolding, and documentation steps into the task whose
+      deliverable needs them; split only where a reviewer could meaningfully
+      reject one task while approving its neighbor. Each task ends with an
+      independently testable deliverable.
+
+      ## Bite-Sized Task Granularity
+
+      **Each step is one action (2-5 minutes):**
+      - "Write the failing test" - step
+      - "Run it to make sure it fails" - step
+      - "Implement the minimal code to make the test pass" - step
+      - "Run the tests and make sure they pass" - step
+      - "Commit" - step
+
+      ## Plan Document Header
+
+      **Every plan MUST start with this header:**
+
+      ```markdown
+      # [Feature Name] Implementation Plan
+
+      > **For agentic workers:** This plan is executed task-by-task by the
+      > workflow's execute stage: a fresh implementer per task, with a spec +
+      > quality review after each task. Steps use checkbox (`- [ ]`) syntax
+      > for tracking.
+
+      **Goal:** [One sentence describing what this builds]
+
+      **Architecture:** [2-3 sentences about approach]
+
+      **Tech Stack:** [Key technologies/libraries]
+
+      ## Global Constraints
+
+      [The spec's project-wide requirements — version floors, dependency limits,
+      naming and copy rules, platform requirements — one line each, with exact
+      values copied verbatim from the spec. Every task's requirements implicitly
+      include this section.]
+
+      ---
+      ```
+
+      ## Task Structure
+
+      ````markdown
+      ### Task N: [Component Name]
+
+      **Files:**
+      - Create: `exact/path/to/file.py`
+      - Modify: `exact/path/to/existing.py:123-145`
+      - Test: `tests/exact/path/to/test.py`
+
+      **Interfaces:**
+      - Consumes: [what this task uses from earlier tasks — exact signatures]
+      - Produces: [what later tasks rely on — exact function names, parameter
+        and return types. A task's implementer sees only their own task; this
+        block is how they learn the names and types neighboring tasks use.]
+
+      - [ ] **Step 1: Write the failing test**
+
+      ```python
+      def test_specific_behavior():
+          result = function(input)
+          assert result == expected
+      ```
+
+      - [ ] **Step 2: Run test to verify it fails**
+
+      Run: `pytest tests/path/test.py::test_name -v`
+      Expected: FAIL with "function not defined"
+
+      - [ ] **Step 3: Write minimal implementation**
+
+      ```python
+      def function(input):
+          return expected
+      ```
+
+      - [ ] **Step 4: Run test to verify it passes**
+
+      Run: `pytest tests/path/test.py::test_name -v`
+      Expected: PASS
+
+      - [ ] **Step 5: Commit**
+
+      ```bash
+      git add tests/path/test.py src/path/file.py
+      git commit -m "feat: add specific feature"
+      ```
+      ````
+
+      ## No Placeholders
+
+      Every step must contain the actual content an engineer needs. These are
+      **plan failures** — never write them:
+      - "TBD", "TODO", "implement later", "fill in details"
+      - "Add appropriate error handling" / "add validation" / "handle edge cases"
+      - "Write tests for the above" (without actual test code)
+      - "Similar to Task N" (repeat the code — the engineer may be reading tasks
+        out of order)
+      - Steps that describe what to do without showing how (code blocks required
+        for code steps)
+      - References to types, functions, or methods not defined in any task
+
+      ## Remember
+      - Exact file paths always
+      - Complete code in every step — if a step changes code, show the code
+      - Exact commands with expected output
+      - DRY, YAGNI, TDD, frequent commits
+
+      ## Self-Review
+
+      After writing the complete plan, look at the spec from a different
+      perspective, as if you're reading it for the first time, and check the plan
+      against it. This is a checklist you run yourself — not a subagent dispatch.
+
+      **1. Spec coverage:** Skim each section/requirement in the spec. Can you
+      point to a task that implements it? List any gaps.
+
+      **1b. No silent deferrals of required behavior:** For every user-facing
+      requirement, name the observable production outcome that proves it works
+      without stubs, mocks, fake providers, synthetic URLs, TODOs, or "seams"
+      standing in for the behavior. If a task uses a stub/mock/test double,
+      explicitly state which separate task replaces it with production behavior
+      and which integration/e2e test proves the real outcome. If no such task
+      exists, the plan has a spec-coverage gap; do not move it to "known
+      limitations" or "future work" unless the user explicitly approves that
+      scope reduction.
+
+      **2. Placeholder scan:** Search your plan for red flags — any of the
+      patterns from the "No Placeholders" section above. Fix them.
+
+      **3. Type consistency:** Do the types, method signatures, and property
+      names you used in later tasks match what you defined in earlier tasks? A
+      function called `clearLayers()` in Task 3 but `clearFullLayers()` in Task 7
+      is a bug.
+
+      If you find issues, fix them inline. No need to re-review — just fix and
+      move on. If you find a spec requirement with no task, add the task.
+
+      ==================== END WRITING PLANS ====================
+
+      Recipe-specific instructions:
+      - There is NO execution-handoff question: this workflow always executes the
+        plan via its execute stage (Step 4). Everything above through Self-Review
+        still applies.
+      - Self-Review item 1b precedence: mid-run there is no user to approve a
+        scope reduction, so NEVER move a requirement to "known limitations" or
+        "future work". Include the covering task; if that is genuinely
+        impossible, keep the requirement listed as an explicit UNRESOLVED
+        COVERAGE GAP at the top of the plan so the plan-review stage (which
+        reviews the committed plan) fails it loudly rather than letting it slip
+        through silently.
+      - Save the plan at `docs/plans/YYYY-MM-DD-<feature-slug>.md`
+        inside the worktree (today's date via `date +%F`; slug "{{workspace.slug}}").
+      - Cross-cutting rules (complete as stated): README.md is the only end-user
+        markdown doc unless he asked for others — the plan under docs/plans/
+        is a working/agent doc and is fine. Keep commits focused and atomic.
+      - COMMIT the plan to the worktree branch (the fresheyes review stage only
+        reviews committed work). Use a focused commit message, e.g.
+        "docs: add implementation plan for <slug>".
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "plan_path": "<absolute path to the committed plan file>",
+        "feature": "<one-line feature name>"
+      }
+
+  # ===========================================================================
+  # STEP 2 — Load-bearing (full methodology + verbatim subagent prompts, inlined)
+  # ===========================================================================
+  - id: "load-bearing"
+    # The agent that executes this step's instructions (this stage's worker).
+    agent: "foundation:zen-architect"
+    timeout: 5400
+    output: "load_bearing_result"
+    parse_json: true
+    prompt: |
+      Surface and verify the load-bearing assumptions of the plan, then fix the
+      plan accordingly. The complete methodology and the exact subagent prompt
+      templates are inlined below — follow them faithfully.
+
+      PROGRESS BANNERS (mandatory, fixed policy — no discretion): print each
+      banner as plain visible response text (never inside a tool call, never in
+      a file), with a blank line above and below the block so it separates
+      from surrounding output, in this exact format:
+
+      ==================================================================
+      ==================================================================
+      >>> THE USUAL | <STAGE LABEL>
+      >>> <one line: what is starting>
+      >>> <one line: expected scale, e.g. "multiple subagent dispatches — this may take a while">
+      ==================================================================
+      ==================================================================
+
+      This step's banners — exactly these two, at these moments:
+      1. FIRST, before any other work, with stage label
+         "STAGE 2/6: LOAD-BEARING VALIDATION".
+      2. Immediately before dispatching the parallel validator wave (Phase 3,
+         the longest sub-phase), with stage label
+         "STAGE 2/6: VALIDATION WAVE — dispatching N parallel validators"
+         (N = the actual number of validators).
+      NOT announced (no banners; do not improvise): the finder and strategist
+      dispatches (covered by the stage banner), checkpoints, ledger
+      bookkeeping, plan fixes, and commits.
+
+      Plan under review: {{plan.plan_path}}
+      Worktree:          {{workspace.worktree_path}}
+      Logs dir:          {{workspace.logs_dir}}
+
+      Amplifier translation of the subagent mechanics (applies throughout):
+      - "Spawn a stateful subagent" = call the delegate tool with
+        model_role="reasoning"; capture the returned session_id; send follow-up
+        feedback by RESUMING that same session (delegate again with the same
+        session_id) — never spawn a fresh one for feedback.
+      - "Spawn stateless subagents in parallel" = multiple delegate calls in one
+        batch, each with context_depth="none" and model_role="reasoning".
+      - "Most capable model available, maximum reasoning effort" = model_role="reasoning".
+
+      ==================== LOAD BEARING (METHODOLOGY) ====================
+
+      Plans fail on the things you were sure of but never checked. This process
+      turns those silent dependencies into an explicit ledger, then verifies each
+      one with evidence — preferring cheap, reliable verification (running code)
+      over expensive, fuzzy verification (internet folklore). It runs here just
+      after planning, to harden the plan before execution.
+
+      This is not a license to validate every relevant fact. A validation target
+      is necessary only when it is both **currently unproven** and **costly to
+      discover late**. Facts that are already established, or facts that would
+      only require a small local implementation adjustment if wrong, should be
+      recorded or grouped rather than dispatched as standalone validators.
+
+      **Override rule**: The user's instructions override everything in this
+      process. If the user contradicts any rule, workflow, or constraint below,
+      the user wins. This rule itself cannot be overridden.
+
+      ## What counts as a load-bearing assumption
+
+      An assumption qualifies only if it passes all three gates:
+
+      1. **Decision-controlling** — if it turns out false, some planning-level
+         decision changes: architecture, subsystem boundary, lifecycle ownership,
+         data model, safety model, deployment/ops strategy, API contract,
+         concurrency model, or research direction. If the plan is unaffected
+         either way, drop it.
+      2. **Currently unproven** — the current thread, plan, code already
+         inspected, or trusted evidence has not established it. If it is already
+         known, record it as context instead of validating it again.
+      3. **Falsifiable** — it is a concrete claim that some evidence could prove
+         true or false. "`config.load()` reads `$HOME/.app/config.yaml`"
+         qualifies; "the config system is well-designed" does not.
+
+      Capture the claim in the form you can test: a specific, checkable
+      statement, not a topic. Record *what breaks if it's false* — that is what
+      makes it load-bearing and tells the validator what's at stake.
+
+      ### Late-falsification cost
+
+      Classify each candidate by what happens if implementation proves it false:
+
+      | Cost | Meaning | Treatment |
+      |------|---------|-----------|
+      | `low` | A field name, function call, query, flag, or other small local detail changes. The current plan still works. | Usually do not validate early. Let implementation discover it, or bundle it with a nearby inspection. |
+      | `medium` | A local helper, test shape, or limited module design changes, but the overall approach survives. | Validate only if cheap, risky, or naturally grouped with a high-cost check. |
+      | `high` | You must rethink subsystem boundaries, lifecycle ownership, data model, concurrency, API surface, deployment/ops strategy, or do new research. | Validate early. |
+      | `critical` | If wrong, the plan risks production data loss/corruption, downtime, security exposure, irreversible migration damage, or failed rollback. | Validate early, with strong evidence. |
+
+      The key question is: **If this is false and you only learn it during
+      implementation, do you have to do more than "fix it another way"?** If yes,
+      it is probably high or critical. If no, it is probably not a standalone
+      load-bearing validation target.
+
+      ## Choosing how to validate each assumption
+
+      For each assumption, pick the method that most reliably and cheaply answers
+      **that** question. Default preference, most to least reliable for code
+      behavior:
+
+      1. **Run code, observe output** — direct evidence of actual behavior,
+         defaults, side effects, exit codes.
+      2. **Inspect code + static analysis** — when running is infeasible, unsafe,
+         or wouldn't isolate the answer.
+      3. **Official documentation** — for documented contracts, supported
+         versions, defaults.
+      4. **Broader internet** — for undocumented behavior and real-world/empirical
+         norms; weakest, so corroborate.
+
+      This is a default, not a reflex. Override the order by weighing:
+
+      - **Feasibility** — can you actually run/inspect it here (binary present,
+        buildable, reachable)? If not, drop a tier.
+      - **Safety** — prefer running only when it's non-destructive (no data,
+        money, or external side effects). Make it safe with `--help`/`--dry-run`/
+        temp copies/sandbox/read-only flags. Subagents make no actual changes on
+        their own: if the only way to validate requires a state-changing action,
+        get the user's explicit OK before running it (or fall back a tier).
+      - **Question type** — deterministic local behavior -> run/inspect;
+        dynamic/empirical (memory, latency) -> a single run is one noisy data
+        point, so measure repeatedly for *this* system or use the internet for
+        typical values; documented contract -> docs; real-world or undocumented
+        norm -> internet. **Locality flips the tier**: "what is Word's memory
+        footprint?" is an internet question in general, but a run/inspect
+        question inside the Word repo with a build.
+
+      When unsure a method will resolve the question, write a **fallback chain**
+      and let the validator walk it: try tier *n*, and on failure (tool absent,
+      output ambiguous, doc silent) move to *n+1*. Format:
+      `run (foo.sh --help) -> inspect (arg parsing) -> docs`. One reliable method
+      is fine when no fallback is needed — e.g. "does `foo.sh` have a `-x` flag?"
+      is just `run (foo.sh --help) -> inspect the script`.
+
+      ## Workflow
+
+      Phases run in order. Three checkpoints are **yours** — do not delegate the
+      judgment.
+
+      ### Phase 0 — Frame
+      Collect the plan and restate the goal in one or two sentences. This is the
+      context every subagent needs; assemble exactly what they need rather than
+      handing them your whole session.
+
+      ### Phase 1 — Discover (stateful finder, maximum power)
+      Spawn one subagent with the most capable model available to you, at maximum
+      reasoning effort. Keep it **stateful** — you will send follow-up messages
+      to refine its list, and it should retain its reasoning rather than
+      re-derive from scratch. Its job: enumerate **every** falsifiable
+      load-bearing assumption the plan depends on. Bias it toward exhaustive
+      discovery; completeness matters more than precision here.
+
+      **Checkpoint (yours):** Review the list looking for what it *missed* —
+      implicit environmental, version, data-shape, and concurrency assumptions
+      are commonly overlooked. Add the missing ones (feed them back to the finder
+      so its list stays the system of record), then prune for necessity:
+
+      - Cut anything that is not decision-controlling, currently unproven, and
+        falsifiable.
+      - Downgrade low-cost implementation details to notes unless they are
+        essentially free to verify inside another check.
+      - Merge assumptions that one code inspection, command, or source can
+        validate together.
+      - Keep high/critical late-falsification-cost assumptions as standalone
+        validation targets unless they are safely grouped.
+
+      ### Phase 2 — Strategize (separate stateful strategist, maximum power)
+      Spawn a **second, separate** stateful subagent (most capable model
+      available, maximum reasoning). Give it the reviewed assumption list and the
+      preference tree. Its job: assign each assumption the best validation
+      method, with a fallback chain when it's uncertain a method will resolve the
+      question. Require it to justify each choice against feasibility, safety,
+      and question type.
+
+      **Checkpoint (yours):** Inspect its assignments looking for weak choices —
+      a method that won't actually isolate the answer, an unsafe "run it," a
+      default-tier pick where a better tier fits, or unnecessary validator
+      fan-out. Prefer grouped validation when one safe action can establish
+      several assumptions without making the validator's task ambiguous. Correct
+      them with the strategist.
+
+      ### Phase 3 — Validate (parallel stateless validators, maximum power)
+      Spawn one subagent **per validation target**: usually one high/critical
+      assumption, or a grouped set when one safe action can validate several
+      assumptions cleanly. Run them all in parallel, each **stateless** (fresh
+      context, no continuation) with the most capable model available to you.
+      Give each a detailed, self-contained instruction: the claim or grouped
+      claims, decision controlled, current evidence/uncertainty,
+      late-falsification cost, assigned method and fallback chain, and the
+      required report shape. Validators that run code or search the web need full
+      tool access (able to run commands, read files, and search the web), not a
+      read-only agent. They run only read-only, non-destructive commands on their
+      own; if confirming a claim would require changing state (deleting,
+      overwriting, mutating data or config, installing, or external/production
+      writes), they must not do it — they report the needed action back for
+      approval instead. Each returns: **verdict** (confirmed / falsified /
+      inconclusive) per claim, the **evidence** (commands run + output, code
+      cited, doc/source quoted with link), its **confidence**, **any new
+      assumptions surfaced**, and **any state-changing action it was blocked on**
+      (reported, not performed). Surface those blocked actions to the user and
+      get an explicit OK before authorizing them.
+
+      ### Phase 4 — Evaluate & loop
+      Judge each report skeptically: does the evidence actually establish the
+      claim, or merely suggest it? Then:
+      - **Inconclusive or weak evidence** -> send back down the fallback chain or
+        re-strategize the method.
+      - **New assumptions surfaced** (e.g. "this depends on the OS" -> new
+        assumption: "we are running on Linux x86_64") -> add to the ledger and
+        run them through Phase 2-3.
+      - **Falsified** -> flag it; the plan must change. Surface it immediately.
+
+      Loop until every load-bearing assumption is **verified**, **falsified**, or
+      **explicitly accepted as a residual risk** by the user.
+
+      ### Phase 5 — Report
+      Summarize for the user: verified facts the plan can rely on, falsified
+      assumptions (and how the plan must change), accepted residual risks, and
+      anything still open.
+
+      ## The assumption ledger
+
+      Maintain a single ledger across all phases (write it to a file for a large
+      effort). One row per assumption:
+
+      | ID | Assumption (falsifiable claim) | Decision controlled | Current evidence / uncertainty | Late-falsification cost | Method (+ fallback chain) | Status | Evidence / finding |
+      |----|--------------------------------|---------------------|----------------------------|-------------------------|---------------------------|--------|--------------------|
+
+      Status values: `unverified` -> `verifying` -> `verified` / `falsified` /
+      `acceptable`.
+
+      ## Important Rules
+
+      - **User overrides everything**: The user's instructions supersede any rule
+        in this process. This is not negotiable.
+      - **Keep the three checkpoints yours.** The finder and strategist propose;
+        you decide what's missing, wrong, or weak before moving on.
+      - **Statefulness is deliberate.** Finder and strategist are stateful so
+        they incorporate your feedback without re-deriving. Validators are
+        stateless and parallel so they stay independent and fast.
+      - **Evidence beats assertion.** A "confirmed" verdict without runnable
+        commands, cited code, or a quoted source is not confirmed — send it back.
+      - **No changes without approval.** Subagents may run read-only,
+        non-destructive commands freely, but must not delete, overwrite, mutate,
+        install, or make external/production writes without explicit user
+        approval — they report the needed action back instead. Prefer
+        non-destructive verification; fall back to inspection/docs/internet when
+        running isn't safe.
+
+      ==================== SUBAGENT PROMPTS (USE VERBATIM) ====================
+
+      Copy-paste prompts for the three subagent roles. Replace `[bracketed]`
+      placeholders. Spawn all three with model_role="reasoning".
+
+      Statefulness: spawn the **finder** and **strategist** once and continue the
+      same conversation (resume by session_id) when you send review feedback, so
+      they refine their own work instead of re-deriving it. Spawn each
+      **validator** fresh — never continue one — and dispatch them in parallel.
+
+      ### 1. Finder (Phase 1 — stateful)
+
+      ```
+      You are finding the load-bearing assumptions in a plan. Think as hard as you can.
+
+      GOAL: [restate the goal in 1-2 sentences]
+
+      PLAN / INTENDED APPROACH:
+      [paste the plan or task + approach]
+
+      RELEVANT CONTEXT:
+      [codebase facts, environment, tools, APIs, data the plan touches — only what's needed]
+
+      A load-bearing assumption is a claim that passes ALL THREE gates:
+      - decision-controlling: if false, a planning-level decision changes (architecture,
+        subsystem boundary, lifecycle ownership, data model, safety model, deployment/ops
+        strategy, API contract, concurrency model, or research direction),
+      - currently unproven: not already established by the provided context/evidence, AND
+      - falsifiable: a concrete claim some evidence could prove true or false.
+
+      Find EVERY such assumption the plan silently depends on. Be exhaustive, but do not
+      inflate the list with facts that are merely relevant. Probe the easily-missed categories:
+      environment/OS/arch, tool availability and versions, API/library contracts and defaults,
+      data shape and volume, concurrency and ordering, permissions and auth, error/edge behavior,
+      and "this works the way I remember" beliefs.
+
+      Classify late-falsification cost:
+      - low: if false, implementation can fix a local detail another way.
+      - medium: if false, a local helper/test/module design changes, but the plan survives.
+      - high: if false, architecture, boundaries, lifecycle, data model, concurrency, API,
+        deployment/ops, or research direction must be rethought.
+      - critical: if false, the plan risks production data loss/corruption, downtime, security
+        exposure, irreversible migration damage, or failed rollback.
+
+      For each, output a row:
+      - claim (the specific, testable statement — not a topic)
+      - decision controlled (what planning choice relies on it)
+      - current evidence / uncertainty (why it is not already known)
+      - late-falsification cost (low | medium | high | critical)
+      - what would have to change if false
+      - why you think it's currently unproven
+
+      Exclude anything that is not decision-controlling, currently unproven, and falsifiable
+      (opinions, aesthetics, already-known facts, or details that would only require a small
+      local implementation adjustment). Return the list only.
+      ```
+
+      When you send additions/cuts back, keep it terse: "Add these: ... Remove
+      these (not load-bearing/falsifiable): ... Return the updated list."
+
+      ### 2. Strategist (Phase 2 — stateful)
+
+      ```
+      You are assigning each assumption the best way to VALIDATE it. Think as hard as you can.
+
+      ASSUMPTIONS (reviewed list):
+      [paste the ledger claims + decision controlled + current evidence/uncertainty + late-falsification cost]
+
+      ENVIRONMENT: [OS/arch, what's installed/buildable/reachable, repo on hand, network/creds available]
+
+      Choose, per assumption or safely grouped set of assumptions, the method that most reliably
+      and cheaply answers THAT question. The goal is not maximum validator count; it is enough
+      evidence with the least duplicated work.
+
+      Default preference order:
+        1. run code, observe output   2. inspect code + static analysis
+        3. official documentation     4. broader internet
+
+      But this is a default, not a reflex. Override it by weighing:
+      - FEASIBILITY: can it actually be run/inspected here?
+      - SAFETY: prefer running only when feasible AND non-destructive (no data/money/external
+        side effects; use --help/--dry-run/temp copies/sandbox to make it safe). If the only path
+        to validate requires a state-changing action, mark it "needs user approval" instead of
+        assigning a plain run.
+      - QUESTION TYPE: deterministic local behavior -> run/inspect; dynamic/empirical (footprint,
+        latency) -> measure repeatedly or use internet for typical values; documented contract -> docs;
+        real-world/undocumented norm -> internet. Locality can flip the tier.
+      - NECESSITY: high/critical late-falsification-cost assumptions deserve standalone or clearly
+        grouped validation. Medium assumptions should be validated only when cheap, risky, or naturally
+        grouped. Low-cost implementation details should usually be marked "defer to implementation"
+        instead of assigned a standalone validator.
+      - GROUPING: when one safe command, code inspection, or source can validate several assumptions,
+        group them unless the combined task would become ambiguous or weaken the evidence.
+
+      When you're not certain a method will resolve it, give an ordered FALLBACK CHAIN
+      (e.g. "run (foo.sh --help) -> inspect (arg parsing) -> docs"). One reliable method is fine
+      when no fallback is needed.
+
+      For each assumption output:
+      - validate now? (yes | grouped with [IDs] | defer) and why
+      - chosen method (+ fallback chain)
+      - one-line justification citing feasibility / safety / question type
+      - the exact first action (command to run, file to inspect, doc/page to read, or query)
+      ```
+
+      When you send corrections back: name the assumption, what's wrong with the
+      choice (won't isolate the answer / unsafe to run / wrong tier), and ask for
+      a revised assignment.
+
+      ### 3. Validator (Phase 3 — stateless, one per validation target, in parallel)
+
+      Spawn one per validation target with full tool access — usually one
+      high/critical assumption, or a grouped set when one safe action can
+      validate several assumptions cleanly. It may need to run commands, read
+      files, and search the web (not a read-only agent, but it must run only
+      non-destructive commands; see SAFETY below). Fill in every placeholder; the
+      validator has no other context.
+
+      ```
+      Validate the assigned assumption(s) and report back. Think rigorously; do not rubber-stamp them.
+
+      ASSUMPTION(S) (claim(s) to test):
+      [ID: exact falsifiable claim]
+
+      FOR EACH ASSUMPTION:
+      - DECISION CONTROLLED: [planning choice that relies on this]
+      - CURRENT EVIDENCE / UNCERTAINTY: [why it is not already known]
+      - LATE-FALSIFICATION COST: [low | medium | high | critical, plus short reason]
+      - WHAT WOULD HAVE TO CHANGE IF FALSE: [stakes]
+
+      ASSIGNED METHOD + FALLBACK CHAIN: [e.g. run (foo.sh --help) -> inspect (arg parsing) -> docs]
+      CONTEXT NEEDED: [repo path, command, env, doc URL, anything required to act]
+      SAFETY: run only read-only / non-destructive commands. Do NOT make actual changes — no
+      deleting, overwriting, or mutating files/data/config, installing packages, or external/
+      production writes — even if it would help confirm the claim. If validating genuinely
+      requires a state-changing action, do NOT perform it: report it as a blocked step (the exact
+      command + why it's needed) for the user to approve, and fall back to the next safe link in
+      the chain if one exists.
+
+      Execute the chain: try the first method; on failure, ambiguity, or inconclusive output,
+      proceed to the next link. Reach a verdict only on evidence you actually gathered.
+
+      Return exactly:
+      - VERDICT: confirmed | falsified | inconclusive, per assumption ID
+      - EVIDENCE: the proof — commands run + their output, code quoted with file:line, or
+        doc/source quoted with a link. No evidence = not confirmed.
+      - CONFIDENCE: high | medium | low, with the reason.
+      - NEW ASSUMPTIONS SURFACED: any new falsifiable dependency you discovered (e.g. "the answer
+        depends on the OS" -> "we are running on [X]"), or "none".
+      - BLOCKED ON APPROVAL: any state-changing action that would confirm this but needs the
+        user's OK before running — the exact command + why — or "none".
+      ```
+
+      ==================== END LOAD BEARING ====================
+
+      Recipe-specific instructions:
+      - WRITE the assumption ledger to `{{workspace.logs_dir}}/load-bearing-ledger.md`
+        (the recap stage reads it).
+      - Then FIX THE PLAN: apply changes required by verified/falsified findings,
+        updating {{plan.plan_path}}. Re-run the writing-plans Self-Review (from
+        Step 1's methodology, incl. item 1b) over any edited tasks. COMMIT the
+        plan updates (focused, atomic message). Preserve unrelated changes by
+        other agents.
+      - HALT rule: only halt the whole workflow if a FALSIFIED
+        assumption implies real data-loss / corruption / irreversible-damage risk
+        that CANNOT be planned around. Ordinary falsified assumptions are fixed
+        in the plan and are NOT halts. Otherwise, record each `acceptable`
+        decision for the final recap.
+      - User-interaction translation — these recipe rules take PRECEDENCE over
+        the inlined methodology's user-interaction phrasing, which was written
+        for a live conversation. There is no user to consult mid-run; YOU
+        adjudicate. Since the process has to pick a course, when no path is
+        verified your goal is the MOST ACCEPTABLE path. "Acceptable" means: try
+        other things to see if they're better BEFORE deciding the acceptable
+        solution is the best.
+        (a) Validators must still never perform state-changing actions. When a
+            validation is blocked on an action requiring approval, do NOT
+            authorize it mid-run — walk the fallback chain instead.
+        (b) When an assumption exhausts its fallback chain unverified (or is
+            blocked per (a) with no safe link left), run this decision
+            procedure — do not simply accept the plan's current path:
+            1. Generate alternative approaches that would avoid or reduce
+               reliance on the unverified assumption.
+            2. Evaluate those alternatives cheaply, using the same validation
+               preference tree (run > inspect > docs > internet) — a verifiable
+               alternative beats an unverifiable incumbent.
+            3. Choose the best available: a verified alternative wins outright;
+               otherwise compare acceptability across candidates (risk severity,
+               reversibility, blast radius, how much of the plan depends on it)
+               and pick the most acceptable.
+            4. Record the decision in the ledger with status `acceptable`,
+               including the alternatives considered and why the chosen path
+               won (note any blocked state-changing action that forced the
+               call). Update the plan to match the chosen path.
+        (c) The loop-exit condition "explicitly accepted as a residual risk by
+            the user" translates to: the claim reached a recorded `acceptable`
+            decision via the procedure in (b). Report every such decision in
+            your step output's acceptable_decisions — the recap presents them
+            as decisions made, for transparency.
+        (d) The data-loss HALT rule above is unchanged and takes precedence: a
+            candidate path whose failure mode is data loss/corruption that
+            cannot be planned around is a halt, never `acceptable`.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "halt": "true|false",
+        "halt_reason": "<empty string unless halt is true; then the specific data-loss/corruption risk>",
+        "verified_count": 0,
+        "falsified_count": 0,
+        "acceptable_decisions": "<one paragraph summarizing each `acceptable` decision (claim, alternatives considered, why the chosen path won), or 'none'>",
+        "ledger_path": "{{workspace.logs_dir}}/load-bearing-ledger.md"
+      }
+
+  # ---- Halt guard: fail loudly if load-bearing found unplannable data-loss risk
+  - id: "load-bearing-halt-guard"
+    type: "bash"
+    condition: "{{load_bearing_result.halt}} == 'true'"
+    command: |
+      echo "HALT: load-bearing surfaced a data-loss/corruption risk that cannot be planned around." >&2
+      echo "Reason: {{load_bearing_result.halt_reason}}" >&2
+      echo "See ledger: {{load_bearing_result.ledger_path}}" >&2
+      exit 1
+    on_error: "fail"
+
+  # ===========================================================================
+  # STEP 3 — fresheyes on the PLAN (loop: max 3, exit early on PASS)
+  #
+  # The complete reviewer prompt is inlined below with the review scope already
+  # substituted. The delegated reviewer receives that text as its ENTIRE
+  # instruction — nothing added, nothing removed.
+  # ===========================================================================
+  - id: "fresheyes-plan"
+    # The agent that executes this step's instructions (this stage's worker).
+    agent: "foundation:zen-architect"
+    timeout: 3600
+    output: "fresheyes_plan_result"
+    parse_json: true
+    while_condition: "{{plan_passed}} != 'true'"
+    max_while_iterations: 3
+    break_when: "{{plan_passed}} == 'true'"
+    update_context:
+      plan_passed: "{{fresheyes_plan_result.passed}}"
+    prompt: |
+      Run ONE fresheyes review iteration on the PLAN. Fresheyes is a truly
+      independent, cross-model review: the reviewer gets zero conversation
+      context, a different model family than this session, and EXACTLY the
+      instruction text between the BEGIN/END markers below — you must not add,
+      remove, or editorialize anything in it.
+
+      PROGRESS BANNER (mandatory, fixed policy — no discretion): FIRST, before
+      any other work, print the following banner as plain visible response text
+      (never inside a tool call, never in a file), with a blank line above
+      and below the block so it separates from surrounding output. Determine i by counting the
+      iteration entries already recorded in the fresheyes-plan.md log file,
+      plus 1 (i = 1 if the file does not exist yet):
+
+      ==================================================================
+      ==================================================================
+      >>> THE USUAL | STAGE 3/6: FRESH EYES ON PLAN — review i of up to 3 (independent cross-model review)
+      >>> Dispatching an independent reviewer against the committed plan
+      >>> One cross-model review dispatch plus any fixes — this may take a while
+      ==================================================================
+      ==================================================================
+
+      This banner covers both the review dispatch and any fixes that follow it
+      in this iteration. NOT announced (no extra banners; do not improvise):
+      verdict parsing, commits, and plan-fix work.
+
+      Worktree:  {{workspace.worktree_path}}
+      Plan file: {{plan.plan_path}}
+      Logs dir:  {{workspace.logs_dir}}
+
+      (a) COMMIT FIRST: ensure every change in the worktree is committed —
+          fresheyes only reviews committed work. Do not commit anything under the
+          logs dir (it lives outside the worktree tree by design).
+
+      (b) DELEGATE THE REVIEW: call the delegate tool with:
+            - instruction = the exact text between the BEGIN/END markers below
+              (markers excluded), and NOTHING more.
+            - context_depth = "none"  (zero-context independence)
+            - provider_preferences = [ { "provider": "{{reviewer_provider}}",
+                                         "model": "{{reviewer_model}}" } ]
+              (a DIFFERENT model family than this session's Anthropic executor;
+              provider_preferences pins the reviewer model, so no model_role is
+              needed on this dispatch)
+            - No specialized reviewer agent/persona — the persona is entirely in
+              the instruction text. Use a general-purpose delegation target.
+
+      ---------- BEGIN REVIEWER INSTRUCTION (send verbatim) ----------
+      You are a detailed, thorough, patient senior engineer who is performing a detailed review of a less capable engineer's work. Assume nothing, take nothing for granted.
+
+      Do not invoke or load any skills, plugins, subprocess reviewers, secondary agents, or review wrappers.
+
+      ### What to Review
+
+      Review the plan in {{plan.plan_path}}.
+
+      ### Context Gathering
+
+      - Read relevant repository files (e.g., AGENTS.md, README.md, related source files) for context.
+      - Examine the code structure and patterns used in the codebase
+      - Understand the purpose and intent of the changes
+      - You may inspect the repo with read-only git commands: git diff, git status -sb, git show, git log
+      - Err on the side of more research rather than less
+      - Any time you see an open question, go back and research further
+      - You may search the web for documentation, substantiation, or any other purpose
+      - Shell commands must be bounded. Use `timeout 300s` around any command that could take a while.
+      - Do NOT modify files
+      - Do NOT run git commit/push/rebase, change branches, or apply patches
+
+      ### Review For
+
+      Review for ANYTHING that is wrong. This includes but is not limited to:
+      - Architectural inconsistencies or patterns that are non-idiomatic for the language or codebase.
+      - Correctness bugs and logic errors
+      - Missing edge cases
+      - Misuse of frameworks/APIs
+      - Security issues (injection, XSS, auth bypasses, etc.)
+      - Performance pitfalls
+      - Inconsistent error handling/logging
+      - Missing or obviously wrong tests
+      - Code that doesn't match its stated purpose
+      Focus on finding the most severe problems you can - the more 'critical' and 'major' problems you discover, the better.
+
+      ### For Commits/Changes
+
+      - Validate that the commit message accurately describes what the changes actually do
+      - The message should not claim changes that aren't present, and should not omit significant changes
+      - Look for stray files that might be included that shouldn't have been
+      - A vague commit message (e.g., "fix bug") without detail is a major issue
+
+      ### Implementation Plans and Runbooks
+
+      When reviewing a plan, runbook, proposed patch sequence, test design, or docs change that tells another agent how to implement or verify work:
+
+      - Treat it as executable behavior, not prose-only documentation.
+      - A step that would fail as written, makes a later `Expected: PASS` unachievable, references missing variables/files/artifacts, contradicts current repository behavior, or has a command/assertion mismatch is at least **major** and blocking.
+      - A proposed test or verifier that would fail for the wrong reason, pass vacuously, or fail to check the property it claims to prove is at least **major** and blocking when the plan relies on it as a verification gate.
+      - Do not downgrade an executable plan defect because TDD, CI, a future implementer, or a careful reader might notice and fix it later.
+      - Passing a plan review is appropriate only when remaining issues are optional refinements that do not change whether the plan can be executed and verified as written.
+
+      ### Related Tests
+
+      Using static analysis only (do NOT run tests), determine:
+      - Does this change appropriately update existing tests if the changes affect tested behavior?
+      - Does it create new tests as it should, if adding testable functionality?
+      - Or do the changes not impact existing test coverage?
+      - Flag as blocking if tests should have been updated/added but weren't
+
+      ### Classification
+
+      Rate each issue:
+      - **critical**: Security vulnerabilities, data loss, crashes
+      - **major**: Bugs, significant logic errors, missing error handling, or executable plan/test steps that cannot pass as written
+      - **minor**: Code quality issues, potential edge cases
+      - **nit**: Style, naming, minor improvements
+
+      ### Unable to Review
+
+      If you cannot perform the review, you MUST fail. Examples:
+      - No changes found (no staged changes, empty diff, no commit to review)
+      - Referenced files are missing or unreadable
+      - The scope description can't be evaluated with what's in the repository
+      - Any other condition that prevents a meaningful review
+
+      Do not pass a review you could not actually perform.
+
+      ### Blocking Decision
+
+      Decide whether there are blocking issues. **Anything that isn't minor or a nit is blocking.** A significant mismatch between the commit message and the actual changes IS a blocking issue.
+
+      ### Guidelines
+
+      - If unsure, err on the side of flagging as blocking
+      - A commit message that is vague but not wrong (e.g., "fix bug") is blocking
+      - A commit message that claims something not done, or omits major changes, is blocking
+      - Consider the full context of the repository, not just the changed lines
+      - Be thorough but concise in your explanations
+
+      ### Output
+
+      List all files you examined, then report your findings:
+
+      ```
+      ## Files Examined
+      - [list each file you read/examined]
+
+      ## Issues Found
+      [For each issue:]
+      - **[severity]** `file:line` - description
+
+      ## Summary
+      [Brief summary of findings]
+
+      ---
+      **INDEPENDENT CODE REVIEW [PASSED/FAILED]**
+      ```
+
+      Use **PASSED** if no blocking issues found (only cosmetic/nit issues or no issues). When you mark a review **PASSED**, add a short note that if the invoking agent was instructed to iterate with Fresh Eyes, it should stop iterating because only minor/nit issues remain; Fresh Eyes may keep finding small improvements if asked to continue, so the goal is not to iterate until there is nothing left.
+      Use **FAILED** if any blocking issues exist. Anything that isn't cosmetic or a nit is blocking.
+      ---------- END REVIEWER INSTRUCTION ----------
+
+      (c) EXTRACT THE VERDICT: from the reviewer's returned text, find the marker
+          line matching (case-insensitive) `INDEPENDENT CODE REVIEW PASSED` or
+          `INDEPENDENT CODE REVIEW FAILED`. PASSED (or a report listing only
+          nit/cosmetic issues) => passed. FAILED, or NO marker found at all, or a
+          review the judge said it could not perform => NOT passed.
+
+      (d) APPEND this iteration's outcome to
+          `{{workspace.logs_dir}}/fresheyes-plan.md` — record the verdict, the
+          blocking issues (severity + file:line + description), and the
+          reviewer's summary — for the recap stage.
+
+      (e) IF NOT PASSED: fix ONLY the blocking issues the reviewer raised,
+          editing the plan at {{plan.plan_path}} (re-run the writing-plans
+          Self-Review from Step 1's methodology over edited tasks). COMMIT the
+          fixes (focused, atomic). Preserve unrelated changes by other agents.
+          The loop will re-review.
+          IF PASSED: make no further changes.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "passed": "true|false",
+        "verdict": "PASSED|FAILED|NO_MARKER",
+        "blocking_count": 0,
+        "summary": "<one-line summary of this iteration's findings>"
+      }
+
+  # ===========================================================================
+  # STEP 4 — Execute the plan (executing-plans + full subagent-driven-development
+  #          methodology, dispatch templates, and script logic — all inlined)
+  # ===========================================================================
+  - id: "execute-plan"
+    # The agent that executes this step's instructions (this stage's worker —
+    # it acts as the SDD "controller", dispatching implementers and reviewers).
+    agent: "foundation:zen-architect"
+    timeout: 14400
+    output: "execute_result"
+    parse_json: true
+    prompt: |
+      Execute the plan. The complete methodology is inlined below: first the
+      executing-plans process, then the subagent-driven development (SDD)
+      methodology it requires, including the verbatim dispatch prompt templates
+      and the review-package/task-brief bash logic. Follow it exactly.
+
+      PROGRESS BANNERS (mandatory, fixed policy — no discretion): print each
+      banner as plain visible response text (never inside a tool call, never in
+      a file), with a blank line above and below the block so it separates
+      from surrounding output, in this exact format:
+
+      ==================================================================
+      ==================================================================
+      >>> THE USUAL | <STAGE LABEL>
+      >>> <one line: what is starting>
+      >>> <one line: expected scale, e.g. "multiple subagent dispatches — this may take a while">
+      ==================================================================
+      ==================================================================
+
+      This step's banners — exactly these, at these moments:
+      1. FIRST, after reading the plan (so N is known), with stage label
+         "STAGE 4/6: EXECUTING THE PLAN — N tasks" (N = task count).
+      2. Before EACH task's implementer dispatch, with stage label
+         "STAGE 4/6: TASK k of N — <task name>". This banner covers the whole
+         task: implementer, task review, and any fix/re-review loops.
+      3. Before the final whole-branch review dispatch, with stage label
+         "STAGE 4/6: FINAL WHOLE-BRANCH REVIEW".
+      NOT announced (no extra banners; do not improvise): commits, ledger
+      bookkeeping, brief/review-package generation, and the task-reviewer/fix
+      dispatches inside a task (covered by that task's banner).
+
+      Plan:     {{plan.plan_path}}
+      Worktree: {{workspace.worktree_path}}   (work entirely inside it; never on main/master)
+
+      Amplifier translation (applies throughout): "dispatch a subagent" = call
+      the delegate tool with the filled-in prompt template as the instruction and
+      context_depth="none" (fresh subagents never inherit your session context —
+      you construct exactly what they need). "Model selection" maps to the
+      delegate tool's model_role parameter: cheap/fast tier -> model_role="fast";
+      standard tier -> model_role="coding"; most capable tier ->
+      model_role="reasoning". Always set model_role explicitly on every dispatch.
+
+      ==================== EXECUTING PLANS (PROCESS) ====================
+
+      Load plan, review critically, execute all tasks, report when complete.
+
+      ### Step A: Load and Review Plan
+      1. Read plan file
+      2. Review critically - identify any questions or concerns about the plan
+      3. If concerns: raise them (see the HALT rule at the bottom of this step)
+         before starting
+      4. If no concerns: Create todos for the plan items and proceed
+
+      ### Step B: Subagent-Driven Development
+      Use the SDD methodology inlined below.
+
+      ### Step C: Complete Development
+      NOT executed in this step. Per this workflow, the delta fresheyes review
+      and the recap come next; branch finishing (merge/PR/cleanup options) is
+      offered in the final recap instead. Stop after all tasks are implemented,
+      reviewed, and committed.
+
+      ## When to Stop and Ask for Help
+
+      **STOP executing immediately when:**
+      - Hit a blocker (missing dependency, test fails, instruction unclear)
+      - Plan has critical gaps preventing starting
+      - You don't understand an instruction
+      - Verification fails repeatedly
+
+      **Ask for clarification rather than guessing.**
+
+      ## When to Revisit Earlier Steps
+
+      **Return to Review (Step A) when:**
+      - The plan is updated based on your feedback
+      - Fundamental approach needs rethinking
+
+      **Don't force through blockers** - stop and ask.
+
+      ## Remember
+      - Review plan critically first
+      - Follow plan steps exactly
+      - Don't skip verifications
+      - Stop when blocked, don't guess
+      - Never start implementation on main/master branch (without explicit user
+        consent)
+
+      ==================== SUBAGENT-DRIVEN DEVELOPMENT ====================
+
+      Execute plan by dispatching a fresh implementer subagent per task, a task
+      review (spec compliance + code quality) after each, and a broad
+      whole-branch review at the end.
+
+      **Why subagents:** You delegate tasks to specialized agents with isolated
+      context. By precisely crafting their instructions and context, you ensure
+      they stay focused and succeed at their task. They should never inherit your
+      session's context or history — you construct exactly what they need. This
+      also preserves your own context for coordination work.
+
+      **Core principle:** Fresh subagent per task + task review (spec + quality)
+      + broad final review = high quality, fast iteration
+
+      **Narration:** between tool calls, narrate at most one short line — the
+      ledger and the tool results carry the record.
+
+      **Continuous execution:** Do not pause to check in between tasks. Execute
+      all tasks from the plan without stopping. The only reasons to stop are:
+      BLOCKED status you cannot resolve, ambiguity that genuinely prevents
+      progress, or all tasks complete.
+
+      ## The Process (per task, in order)
+
+      1. Read plan once, note context and global constraints, create todos.
+      2. For each task N:
+         a. Generate the task brief (bash below), record the current commit as
+            BASE, then dispatch an implementer subagent (implementer template
+            below) with the brief + report paths + scene-setting context.
+         b. If the implementer asks questions: answer them, provide context,
+            re-dispatch. Don't rush them into implementation.
+         c. Implementer implements, tests, commits, self-reviews, reports status.
+         d. Handle the status (see "Handling Implementer Status" below).
+         e. On DONE: generate the review package (bash below) with the recorded
+            BASE, then dispatch a task reviewer subagent (task-reviewer template
+            below) with the printed path.
+         f. If the reviewer reports spec issues or Critical/Important quality
+            findings: dispatch a fix subagent, then RE-REVIEW (fresh review
+            package). Repeat until approved. Don't skip the re-review.
+         g. Mark task complete in the todo list and the progress ledger.
+      3. After all tasks: dispatch the final whole-branch code reviewer (see
+         "Final whole-branch review" below).
+
+      ## Pre-Flight Plan Review
+
+      Before dispatching Task 1, scan the plan once for conflicts:
+
+      - tasks that contradict each other or the plan's Global Constraints
+      - anything the plan explicitly mandates that the review rubric treats as a
+        defect (a test that asserts nothing, verbatim duplication of a logic block)
+
+      Present everything you find as one batched question — each finding beside
+      the plan text that mandates it, asking which governs — before execution
+      begins, not one interrupt per discovery mid-plan. (In this recipe, that
+      means: treat unresolvable plan contradictions as a blocker per the HALT
+      rule below.) If the scan is clean, proceed without comment. The review loop
+      remains the net for conflicts that only emerge from implementation.
+
+      ## Model Selection
+
+      Use the least powerful model that can handle each role to conserve cost and
+      increase speed.
+
+      **Mechanical implementation tasks** (isolated functions, clear specs, 1-2
+      files): use a fast, cheap model (model_role="fast"). Most implementation
+      tasks are mechanical when the plan is well-specified.
+
+      **Integration and judgment tasks** (multi-file coordination, pattern
+      matching, debugging): use a standard model (model_role="coding").
+
+      **Architecture and design tasks**: use the most capable available model
+      (model_role="reasoning"). The final whole-branch review is one of these —
+      dispatch it with model_role="reasoning", not the session default.
+
+      **Review tasks**: choose the model with the same judgment, scaled to the
+      diff's size, complexity, and risk. A small mechanical diff does not need
+      the most capable model; a subtle concurrency change does.
+
+      **Always specify model_role explicitly when dispatching a subagent.** An
+      omitted model inherits your session's model — often the most capable and
+      most expensive — which silently defeats this section.
+
+      **Turn count beats token price.** Wall-clock and context cost scale with
+      how many turns a subagent takes, and the cheapest models routinely take
+      2-3x the turns on multi-step work — costing more overall. Use a mid-tier
+      model as the floor for reviewers and for implementers working from prose
+      descriptions. When the task's plan text contains the complete code to
+      write, the implementation is transcription plus testing: use the cheapest
+      tier for that implementer. Single-file mechanical fixes also take the
+      cheapest tier.
+
+      **Task complexity signals (implementation tasks):**
+      - Touches 1-2 files with a complete spec -> model_role="fast"
+      - Touches multiple files with integration concerns -> model_role="coding"
+      - Requires design judgment or broad codebase understanding -> model_role="reasoning"
+
+      ## Handling Implementer Status
+
+      Implementer subagents report one of four statuses. Handle each appropriately:
+
+      **DONE:** Generate the review package (bash below; BASE is the commit you
+      recorded before dispatching the implementer — never HEAD~1, which silently
+      drops all but the last commit of a multi-commit task), then dispatch the
+      task reviewer with the printed path.
+
+      **DONE_WITH_CONCERNS:** The implementer completed the work but flagged
+      doubts. Read the concerns before proceeding. If the concerns are about
+      correctness or scope, address them before review. If they're observations
+      (e.g., "this file is getting large"), note them and proceed to review.
+
+      **NEEDS_CONTEXT:** The implementer needs information that wasn't provided.
+      Provide the missing context and re-dispatch.
+
+      **BLOCKED:** The implementer cannot complete the task. Assess the blocker:
+      1. If it's a context problem, provide more context and re-dispatch with the
+         same model
+      2. If the task requires more reasoning, re-dispatch with a more capable model
+      3. If the task is too large, break it into smaller pieces
+      4. If the plan itself is wrong, escalate (HALT rule below)
+
+      **Never** ignore an escalation or force the same model to retry without
+      changes. If the implementer said it's stuck, something needs to change.
+
+      ## Handling Reviewer "Cannot verify from diff" Items
+
+      The task reviewer may report "cannot verify from diff" items — requirements
+      that live in unchanged code or span tasks. These do not block the rest of
+      the review, but you must resolve each one yourself before marking the task
+      complete: you hold the plan and cross-task context the reviewer lacks. If
+      you confirm an item is a real gap, treat it as a failed spec review — send
+      it back to the implementer and re-review.
+
+      ## Constructing Reviewer Prompts
+
+      Per-task reviews are task-scoped gates. The broad review happens once, at
+      the final whole-branch review. When you fill a reviewer template:
+
+      - Do not add open-ended directives like "check all uses" or "run race tests
+        if useful" without a concrete, task-specific reason
+      - Do not ask a reviewer to re-run tests the implementer already ran on the
+        same code — the implementer's report carries the test evidence
+      - Do not pre-judge findings for the reviewer — never instruct a reviewer to
+        ignore or not flag a specific issue. If you believe a finding would be a
+        false positive, let the reviewer raise it and adjudicate it in the review
+        loop. If the prompt you are writing contains "do not flag," "don't treat
+        X as a defect," "at most Minor," or "the plan chose" — stop: you are
+        pre-judging, usually to spare yourself a review loop.
+      - The global-constraints block you hand the reviewer is its attention lens.
+        Copy the binding requirements verbatim from the plan's Global Constraints
+        section or the spec: exact values, exact formats, and the stated
+        relationships between components ("same layout as X", "matches Y"). The
+        reviewer's template already carries the process rules (YAGNI, test
+        hygiene, review method) — the constraints block is for what THIS
+        project's spec demands.
+      - Hand the reviewer its diff as a file: run the review-package bash below
+        and pass the reviewer the file path it prints. The output never enters
+        your own context, and the reviewer sees the commit list, stat summary,
+        and full diff with context in one read. Use the BASE you recorded before
+        dispatching the implementer — never HEAD~1.
+      - A dispatch prompt describes one task, not the session's history. Do not
+        paste accumulated prior-task summaries ("state after Tasks 1-3") into
+        later dispatches. A fresh subagent needs its task, the interfaces it
+        touches, and the global constraints. Nothing else.
+      - Dispatch fix subagents for Critical and Important findings. Record Minor
+        findings in the progress ledger as you go, and point the final
+        whole-branch review at that list so it can triage which must be fixed
+        before merge. A roll-up nobody reads is a silent discard.
+      - A finding labeled plan-mandated — or any finding that conflicts with what
+        the plan's text requires — is the human's decision, like any plan
+        contradiction: present the finding and the plan text (HALT rule below if
+        it genuinely blocks progress). Do not dismiss the finding because the
+        plan mandates it, and do not dispatch a fix that contradicts the plan
+        without asking.
+      - The final whole-branch review gets a package too: run the review-package
+        bash with MERGE_BASE = the commit the branch started from (this
+        workflow's recorded fork point: {{workspace.base_ref}}) and include the
+        printed path in the final review dispatch, so the final reviewer reads
+        one file instead of re-deriving the branch diff with git commands.
+      - Every fix dispatch carries the implementer contract: the fix subagent
+        re-runs the tests covering its change and reports the results. Name the
+        covering test files in the dispatch — a one-line fix does not need the
+        whole suite. Before re-dispatching the reviewer, confirm the fix report
+        contains the covering tests, the command run, and the output; dispatch
+        the re-review once all three are present.
+      - If the final whole-branch review returns findings, dispatch ONE fix
+        subagent with the complete findings list — not one fixer per finding.
+        Per-finding fixers each rebuild context and re-run suites; a real
+        session's final-review fix wave cost more than all its tasks combined.
+
+      ## File Handoffs
+
+      Everything you paste into a dispatch prompt — and everything a subagent
+      prints back — stays resident in your context for the rest of the session
+      and is re-read on every later turn. Hand artifacts over as files:
+
+      - **Task brief:** before dispatching an implementer, run the task-brief
+        bash below — it extracts the task's full text to a uniquely named file
+        and prints the path. Compose the dispatch so the brief stays the single
+        source of requirements. Your dispatch should contain: (1) one line on
+        where this task fits in the project; (2) the brief path, introduced as
+        "read this first — it is your requirements, with the exact values to use
+        verbatim"; (3) interfaces and decisions from earlier tasks that the brief
+        cannot know; (4) your resolution of any ambiguity you noticed in the
+        brief; (5) the report-file path and report contract. Exact values
+        (numbers, magic strings, signatures, test cases) appear only in the brief.
+      - **Report file:** name the implementer's report file after the brief
+        (brief `.../task-N-brief.md` -> report `.../task-N-report.md`) and put it
+        in the dispatch prompt. The implementer writes the full report there and
+        returns only status, commits, a one-line test summary, and concerns.
+      - **Reviewer inputs:** the task reviewer gets three paths — the same brief
+        file, the report file, and the review package — plus the global
+        constraints that bind the task.
+      - Fix dispatches append their fix report (with test results) to the same
+        report file and return a short summary; re-reviews read the updated file.
+
+      ## Durable Progress
+
+      Conversation memory does not survive compaction. Controllers that lost
+      their place have re-dispatched entire completed task sequences — the single
+      most expensive failure observed. Track progress in a ledger file, not only
+      in todos.
+
+      - At start, check for a ledger:
+        `cat "$(git rev-parse --git-path sdd)/progress.md"` (run inside the
+        worktree). Tasks listed there as complete are DONE — do not re-dispatch
+        them; resume at the first task not marked complete.
+      - When a task's review comes back clean, append one line to the ledger in
+        the same message as your other bookkeeping:
+        `Task N: complete (commits <base7>..<head7>, review clean)`.
+      - The ledger is your recovery map: the commits it names exist in git even
+        when your context no longer remembers creating them. After compaction,
+        trust the ledger and `git log` over your own recollection.
+
+      (The `git rev-parse --git-path sdd` location — inside the worktree's git
+      dir — is deliberate: it is unique per repo instance, so concurrent sessions
+      cannot collide, and it never appears in any diff.)
+
+      ## SDD scratch-file bash (run inside the worktree)
+
+      TASK BRIEF — extract one task's full text from the plan into a file the
+      implementer reads in one call (usage: set PLAN and N first):
+
+      ```bash
+      # task-brief: PLAN=<plan file> N=<task number>
+      set -euo pipefail
+      dir=$(git rev-parse --git-path sdd); mkdir -p "$dir"; dir=$(cd "$dir" && pwd)
+      out="$dir/task-${N}-brief.md"
+      awk -v n="$N" '
+        /^```/ { infence = !infence }
+        !infence && /^#+[ \t]+Task[ \t]+[0-9]+/ {
+          intask = ($0 ~ ("^#+[ \t]+Task[ \t]+" n "([^0-9]|$)"))
+        }
+        intask { print }
+      ' "$PLAN" > "$out"
+      [ -s "$out" ] || { echo "task ${N} not found in ${PLAN}" >&2; exit 3; }
+      echo "wrote ${out}: $(wc -l < "$out" | tr -d ' ') lines"
+      ```
+
+      REVIEW PACKAGE — commit list, stat summary, and the net diff with extended
+      context, written to a uniquely named file the reviewer reads in one call
+      (usage: set BASE and HEAD_REF first; BASE = the commit recorded before the
+      implementer was dispatched, never HEAD~1):
+
+      ```bash
+      # review-package: BASE=<base sha> HEAD_REF=<head sha or HEAD>
+      set -euo pipefail
+      git rev-parse --verify --quiet "$BASE" >/dev/null || { echo "bad BASE: $BASE" >&2; exit 2; }
+      git rev-parse --verify --quiet "$HEAD_REF" >/dev/null || { echo "bad HEAD: $HEAD_REF" >&2; exit 2; }
+      dir=$(git rev-parse --git-path sdd); mkdir -p "$dir"; dir=$(cd "$dir" && pwd)
+      out="$dir/review-$(git rev-parse --short "$BASE")..$(git rev-parse --short "$HEAD_REF").diff"
+      {
+        echo "# Review package: ${BASE}..${HEAD_REF}"
+        echo
+        echo "## Commits"
+        git log --oneline "${BASE}..${HEAD_REF}"
+        echo
+        echo "## Files changed"
+        git diff --stat "${BASE}..${HEAD_REF}"
+        echo
+        echo "## Diff"
+        git diff -U10 "${BASE}..${HEAD_REF}"
+      } > "$out"
+      echo "wrote ${out}: $(git rev-list --count "${BASE}..${HEAD_REF}") commit(s), $(wc -c < "$out" | tr -d ' ') bytes"
+      ```
+
+      ## Implementer dispatch template (fill [bracketed] placeholders; send as
+      ## the delegate instruction, with model_role per Model Selection)
+
+      ```
+      You are implementing Task N: [task name]
+
+      ## Task Description
+
+      Read your task brief first: [BRIEF_FILE]
+      It contains the full task text from the plan.
+
+      ## Context
+
+      [Scene-setting: where this fits, dependencies, architectural context]
+
+      ## Before You Begin
+
+      If you have questions about:
+      - The requirements or acceptance criteria
+      - The approach or implementation strategy
+      - Dependencies or assumptions
+      - Anything unclear in the task description
+
+      **Ask them now.** Raise any concerns before starting work.
+
+      ## Your Job
+
+      Once you're clear on requirements:
+      1. Implement exactly what the task specifies
+      2. Write tests (following TDD if task says to)
+      3. Verify implementation works
+      4. Commit your work
+      5. Self-review (see below)
+      6. Report back
+
+      Work from: [directory]
+
+      **While you work:** If you encounter something unexpected or unclear, **ask questions**.
+      It's always OK to pause and clarify. Don't guess or make assumptions.
+
+      While iterating, run the focused test for what you're changing; run the
+      full suite once before committing, not after every edit.
+
+      ## Code Organization
+
+      You reason best about code you can hold in context at once, and your edits are more
+      reliable when files are focused. Keep this in mind:
+      - Follow the file structure defined in the plan
+      - Each file should have one clear responsibility with a well-defined interface
+      - If a file you're creating is growing beyond the plan's intent, stop and report
+        it as DONE_WITH_CONCERNS — don't split files on your own without plan guidance
+      - If an existing file you're modifying is already large or tangled, work carefully
+        and note it as a concern in your report
+      - In existing codebases, follow established patterns. Improve code you're touching
+        the way a good developer would, but don't restructure things outside your task.
+
+      ## When You're in Over Your Head
+
+      It is always OK to stop and say "this is too hard for me." Bad work is worse than
+      no work. You will not be penalized for escalating.
+
+      **STOP and escalate when:**
+      - The task requires architectural decisions with multiple valid approaches
+      - You need to understand code beyond what was provided and can't find clarity
+      - You feel uncertain about whether your approach is correct
+      - The task involves restructuring existing code in ways the plan didn't anticipate
+      - You've been reading file after file trying to understand the system without progress
+
+      **How to escalate:** Report back with status BLOCKED or NEEDS_CONTEXT. Describe
+      specifically what you're stuck on, what you've tried, and what kind of help you need.
+      The controller can provide more context, re-dispatch with a more capable model,
+      or break the task into smaller pieces.
+
+      ## Before Reporting Back: Self-Review
+
+      Review your work with fresh eyes. Ask yourself:
+
+      **Completeness:**
+      - Did I fully implement everything in the spec?
+      - Did I miss any requirements?
+      - Are there edge cases I didn't handle?
+
+      **Quality:**
+      - Is this my best work?
+      - Are names clear and accurate (match what things do, not how they work)?
+      - Is the code clean and maintainable?
+
+      **Discipline:**
+      - Did I avoid overbuilding (YAGNI)?
+      - Did I only build what was requested?
+      - Did I follow existing patterns in the codebase?
+
+      **Testing:**
+      - Do tests actually verify behavior (not just mock behavior)?
+      - Did I follow TDD if required?
+      - Are tests comprehensive?
+      - Is the test output pristine (no stray warnings or noise)?
+
+      If you find issues during self-review, fix them now before reporting.
+
+      ## After Review Findings
+
+      If a reviewer finds issues and you fix them, re-run the tests that cover
+      the amended code and append the results to your report file. Reviewers
+      will not re-run tests for you — your report is the test evidence.
+
+      ## Report Format
+
+      Write your full report to [REPORT_FILE]:
+      - What you implemented (or what you attempted, if blocked)
+      - What you tested and test results
+      - **TDD Evidence** (if TDD was required for this task):
+        - RED: command run, relevant failing output before implementation, and why the failure was expected
+        - GREEN: command run and relevant passing output after implementation
+      - Files changed
+      - Self-review findings (if any)
+      - Any issues or concerns
+
+      Then report back with ONLY (under 15 lines — the detail lives in the
+      report file):
+      - **Status:** DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
+      - Commits created (short SHA + subject)
+      - One-line test summary (e.g. "14/14 passing, output pristine")
+      - Your concerns, if any
+      - The report file path
+
+      If BLOCKED or NEEDS_CONTEXT, put the specifics in the final message
+      itself — the controller acts on it directly.
+
+      Use DONE_WITH_CONCERNS if you completed the work but have doubts about correctness.
+      Use BLOCKED if you cannot complete the task. Use NEEDS_CONTEXT if you need
+      information that wasn't provided. Never silently produce work you're unsure about.
+      ```
+
+      ## Task reviewer dispatch template (fill [bracketed] placeholders; send as
+      ## the delegate instruction, with model_role per Model Selection)
+
+      The reviewer reads the task's diff once and returns two verdicts: spec
+      compliance and code quality. Purpose: verify one task's implementation
+      matches its requirements (nothing more, nothing less) and is well-built
+      (clean, tested, maintainable).
+
+      ```
+      You are reviewing one task's implementation: first whether it matches its
+      requirements, then whether it is well-built. This is a task-scoped gate,
+      not a merge review — a broad whole-branch review happens separately after
+      all tasks are complete.
+
+      ## What Was Requested
+
+      Read the task brief: [BRIEF_FILE]
+
+      Global constraints from the spec/design that bind this task:
+      [GLOBAL_CONSTRAINTS]
+
+      ## What the Implementer Claims They Built
+
+      Read the implementer's report: [REPORT_FILE]
+
+      ## Diff Under Review
+
+      **Base:** [BASE_SHA]
+      **Head:** [HEAD_SHA]
+      **Diff file:** [DIFF_FILE]
+
+      Read the diff file once — it contains the commit list, a stat summary,
+      and the full diff with surrounding context, and it is your view of the
+      change. The diff's context lines ARE the changed files: do not Read a
+      changed file separately unless a hunk you must judge is cut off
+      mid-function — and say so in your report. Do not re-run git commands.
+      If the diff file is missing, fetch the diff yourself:
+      `git diff --stat [BASE_SHA]..[HEAD_SHA]` and `git diff [BASE_SHA]..[HEAD_SHA]`.
+      Do not crawl the broader codebase. Inspect code outside the diff only
+      to evaluate a concrete risk you can name — one focused check per named
+      risk, and name both the risk and what you checked in your report.
+      Cross-cutting changes are legitimate named risks: if the diff changes
+      lock ordering, a function or API contract, or shared mutable state,
+      checking the call sites is the right method.
+
+      Your review is read-only on this checkout. Do not mutate the working
+      tree, the index, HEAD, or branch state in any way.
+
+      ## Do Not Trust the Report
+
+      Treat the implementer's report as unverified claims about the code. It
+      may be incomplete, inaccurate, or optimistic. Verify the claims against
+      the diff. Design rationales in the report are claims too: "left it per
+      YAGNI," "kept it simple deliberately," or any other justification is the
+      implementer grading their own work. Judge the code on its merits — a
+      stated rationale never downgrades a finding's severity.
+
+      ## Tests
+
+      The implementer already ran the tests and reported results with TDD
+      evidence for exactly this code. Do not re-run the suite to confirm their
+      report. Run a test only when reading the code raises a specific doubt
+      that no existing run answers — and then a focused test, never a
+      package-wide suite, race detector run, or repeated/high-count loop. If
+      heavy validation seems warranted, recommend it in your report instead of
+      running it. If you cannot run commands in this environment, name the
+      test you would run.
+
+      Warnings or other noise in the implementer's reported test output are
+      findings — test output should be pristine.
+
+      ## Part 1: Spec Compliance
+
+      Compare the diff against What Was Requested:
+
+      - **Missing:** requirements they skipped, missed, or claimed without
+        implementing
+      - **Extra:** features that weren't requested, over-engineering, unneeded
+        "nice to haves"
+      - **Misunderstood:** right feature built the wrong way, wrong problem
+        solved
+
+      If a requirement cannot be verified from this diff alone (it lives in
+      unchanged code or spans tasks), report it as a "cannot verify from diff"
+      item instead of broadening your search.
+
+      ## Part 2: Code Quality
+
+      **Code quality:**
+      - Clean separation of concerns?
+      - Proper error handling?
+      - DRY without premature abstraction?
+      - Edge cases handled?
+
+      **Tests:**
+      - Do the new and changed tests verify real behavior, not mocks?
+      - Are the task's edge cases covered?
+
+      **Structure:**
+      - Does each file have one clear responsibility with a well-defined interface?
+      - Are units decomposed so they can be understood and tested independently?
+      - Is the implementation following the file structure from the plan?
+      - Did this change create new files that are already large, or
+        significantly grow existing files? (Don't flag pre-existing file
+        sizes — focus on what this change contributed.)
+
+      Your report should point at evidence: file:line references for every
+      finding and for any check you would otherwise answer with a bare
+      "yes." A tight report that cites lines gives the controller everything
+      it needs.
+
+      Your final message is the report itself: begin directly with the
+      spec-compliance verdict. Every line is a verdict, a finding with
+      file:line, or a check you ran — no preamble, no process narration,
+      no closing summary.
+
+      ## Calibration
+
+      Categorize issues by actual severity. Not everything is Critical.
+      Important means this task cannot be trusted until it is fixed: incorrect
+      or fragile behavior, a missed requirement, or maintainability damage you
+      would block a merge over — verbatim duplication of a logic block,
+      swallowed errors, tests that assert nothing. "Coverage could be broader"
+      and polish suggestions are Minor.
+      If the plan or brief explicitly mandates something this rubric calls a
+      defect (a test that asserts nothing, verbatim duplication of a logic
+      block), that IS a finding — report it as Important, labeled
+      plan-mandated. The plan's authorship does not grade its own work; the
+      human decides.
+      Acknowledge what was done well before listing issues — accurate praise
+      helps the implementer trust the rest of the feedback.
+
+      ## Output Format
+
+      ### Spec Compliance
+
+      - Spec compliant | Issues found: [what's missing/extra/misunderstood,
+        with file:line references]
+      - Cannot verify from diff: [requirements you could not verify from the
+        diff alone, and what the controller should check — report alongside the
+        verdict for everything you could verify]
+
+      ### Strengths
+      [What's well done? Be specific.]
+
+      ### Issues
+
+      #### Critical (Must Fix)
+      #### Important (Should Fix)
+      #### Minor (Nice to Have)
+
+      For each issue: file:line, what's wrong, why it matters, how to fix
+      (if not obvious).
+
+      ### Assessment
+
+      **Task quality:** [Approved | Needs fixes]
+
+      **Reasoning:** [1-2 sentence technical assessment]
+      ```
+
+      Template placeholders:
+      - [BRIEF_FILE] — REQUIRED: the task brief file (task-brief bash prints the
+        path; same file the implementer worked from)
+      - [GLOBAL_CONSTRAINTS] — the binding requirements copied verbatim from the
+        plan's Global Constraints section or the spec: exact values, formats, and
+        stated relationships between components (not process rules — those are
+        already in the template)
+      - [REPORT_FILE] — REQUIRED: the file the implementer wrote its detailed
+        report to
+      - [BASE_SHA] — commit before this task; [HEAD_SHA] — current commit
+      - [DIFF_FILE] — REQUIRED: the path the review-package bash printed (the
+        package never enters the controller's context)
+
+      A fix dispatch can address spec gaps and quality findings together;
+      re-review after fixes covers both verdicts.
+
+      ## Final whole-branch review
+
+      After all tasks complete: run the review-package bash with
+      BASE={{workspace.base_ref}} and HEAD_REF=HEAD, then dispatch the final
+      reviewer with model_role="reasoning". For its template, load
+      load_skill("requesting-code-review") and use its code-reviewer template;
+      include the review-package path and the progress ledger's Minor
+      findings list so the reviewer can triage which must be fixed before merge.
+      If it returns findings, dispatch ONE fix subagent with the complete
+      findings list — then re-review.
+
+      ## Red Flags
+
+      **Never:**
+      - Start implementation on main/master branch without explicit user consent
+      - Skip task review, or accept a report missing either verdict (spec
+        compliance AND task quality are both required)
+      - Proceed with unfixed issues
+      - Dispatch multiple implementation subagents in parallel (conflicts)
+      - Make a subagent read the whole plan file (hand it its task brief instead)
+      - Skip scene-setting context (subagent needs to understand where task fits)
+      - Ignore subagent questions (answer before letting them proceed)
+      - Accept "close enough" on spec compliance (reviewer found spec issues =
+        not done)
+      - Skip review loops (reviewer found issues = implementer fixes = review
+        again)
+      - Let implementer self-review replace actual review (both are needed)
+      - Tell a reviewer what not to flag, or pre-rate a finding's severity in the
+        dispatch prompt ("treat it as Minor at most") — the plan's example code
+        is a starting point, not evidence that its weaknesses were chosen
+      - Dispatch a task reviewer without a diff file — generate it first
+        (review-package bash) and name the printed path in the prompt
+      - Move to next task while the review has open Critical/Important issues
+      - Re-dispatch a task the progress ledger already marks complete — check the
+        ledger (and `git log`) after any compaction or resume
+
+      **If subagent asks questions:** answer clearly and completely, provide
+      additional context if needed, don't rush them into implementation.
+
+      **If reviewer finds issues:** implementer (or a fix subagent) fixes them,
+      reviewer reviews again, repeat until approved. Don't skip the re-review.
+
+      **If subagent fails task:** dispatch fix subagent with specific
+      instructions. Don't try to fix manually (context pollution).
+
+      ==================== END SUBAGENT-DRIVEN DEVELOPMENT ====================
+
+      Cross-cutting rules (complete as stated — enforce in every dispatch and fix):
+      - NEVER reduce test coverage or skip/disable tests to make things pass.
+      - Preserve unrelated changes from other agents in the same repo.
+      - Commits stay focused and atomic.
+      - README.md is the only end-user markdown doc unless Dan requested others.
+
+      HALT rule: per "When to Stop and Ask for Help" — on a real blocker
+      (missing dependency, repeatedly failing verification, unclear instruction,
+      critical plan gap, unresolvable plan contradiction) STOP and report it
+      rather than guessing. Represent that as blocked=true below; a guard step
+      will fail the recipe with your message so Dan can intervene.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "blocked": "true|false",
+        "blocked_reason": "<empty unless blocked; then the specific blocker>",
+        "tasks_completed": 0,
+        "final_review_verdict": "<the final whole-branch reviewer's verdict, or 'n/a' if blocked>",
+        "execution_notes": "<2-4 sentence factual summary of what was built and any concerns>"
+      }
+
+  # ---- Blocker guard: fail loudly if execution hit a stop-and-ask blocker
+  - id: "execute-halt-guard"
+    type: "bash"
+    condition: "{{execute_result.blocked}} == 'true'"
+    command: |
+      echo "HALT: execution stopped per 'When to Stop and Ask for Help'." >&2
+      echo "Blocker: {{execute_result.blocked_reason}}" >&2
+      exit 1
+    on_error: "fail"
+
+  # ===========================================================================
+  # STEP 5 — fresheyes on the DELTA (worktree vs original fork; max 5, PASS-early)
+  #
+  # Same reviewer prompt as Step 3, inlined verbatim, with the scope already
+  # substituted for the branch delta.
+  # ===========================================================================
+  - id: "fresheyes-delta"
+    # The agent that executes this step's instructions (this stage's worker).
+    agent: "foundation:zen-architect"
+    timeout: 3600
+    output: "fresheyes_delta_result"
+    parse_json: true
+    while_condition: "{{delta_passed}} != 'true'"
+    max_while_iterations: 5
+    break_when: "{{delta_passed}} == 'true'"
+    update_context:
+      delta_passed: "{{fresheyes_delta_result.passed}}"
+    prompt: |
+      Run ONE fresheyes review iteration on the DELTA between the original fork
+      point and current HEAD. The reviewer gets zero conversation context, a
+      different model family than this session, and EXACTLY the instruction text
+      between the BEGIN/END markers below — nothing added, nothing removed.
+
+      PROGRESS BANNER (mandatory, fixed policy — no discretion): FIRST, before
+      any other work, print the following banner as plain visible response text
+      (never inside a tool call, never in a file), with a blank line above
+      and below the block so it separates from surrounding output. Determine i by counting the
+      iteration entries already recorded in the fresheyes-delta.md log file,
+      plus 1 (i = 1 if the file does not exist yet):
+
+      ==================================================================
+      ==================================================================
+      >>> THE USUAL | STAGE 5/6: FRESH EYES ON DELTA — review i of up to 5 (independent cross-model review)
+      >>> Dispatching an independent reviewer against the full branch delta
+      >>> One cross-model review dispatch plus any fixes — this may take a while
+      ==================================================================
+      ==================================================================
+
+      This banner covers both the review dispatch and any fixes that follow it
+      in this iteration. NOT announced (no extra banners; do not improvise):
+      verdict parsing, commits, and fix work.
+
+      Worktree:      {{workspace.worktree_path}}
+      Original fork: {{workspace.base_ref}}
+      Logs dir:      {{workspace.logs_dir}}
+
+      (a) COMMIT FIRST: ensure all work in the worktree is committed before
+          review. Do not commit anything under the logs dir.
+
+      (b) DELEGATE THE REVIEW: call the delegate tool with:
+            - instruction = the exact text between the BEGIN/END markers below
+              (markers excluded), and NOTHING more.
+            - context_depth = "none"
+            - provider_preferences = [ { "provider": "{{reviewer_provider}}",
+                                         "model": "{{reviewer_model}}" } ]
+              (provider_preferences pins the reviewer model, so no model_role is
+              needed on this dispatch)
+            - No specialized reviewer agent/persona; general-purpose target only.
+          The reviewer works from the worktree at {{workspace.worktree_path}}.
+
+      ---------- BEGIN REVIEWER INSTRUCTION (send verbatim) ----------
+      You are a detailed, thorough, patient senior engineer who is performing a detailed review of a less capable engineer's work. Assume nothing, take nothing for granted.
+
+      Do not invoke or load any skills, plugins, subprocess reviewers, secondary agents, or review wrappers.
+
+      ### What to Review
+
+      Review the changes between {{workspace.base_ref}} and HEAD using git diff {{workspace.base_ref}}...HEAD.
+
+      ### Context Gathering
+
+      - Read relevant repository files (e.g., AGENTS.md, README.md, related source files) for context.
+      - Examine the code structure and patterns used in the codebase
+      - Understand the purpose and intent of the changes
+      - You may inspect the repo with read-only git commands: git diff, git status -sb, git show, git log
+      - Err on the side of more research rather than less
+      - Any time you see an open question, go back and research further
+      - You may search the web for documentation, substantiation, or any other purpose
+      - Shell commands must be bounded. Use `timeout 300s` around any command that could take a while.
+      - Do NOT modify files
+      - Do NOT run git commit/push/rebase, change branches, or apply patches
+
+      ### Review For
+
+      Review for ANYTHING that is wrong. This includes but is not limited to:
+      - Architectural inconsistencies or patterns that are non-idiomatic for the language or codebase.
+      - Correctness bugs and logic errors
+      - Missing edge cases
+      - Misuse of frameworks/APIs
+      - Security issues (injection, XSS, auth bypasses, etc.)
+      - Performance pitfalls
+      - Inconsistent error handling/logging
+      - Missing or obviously wrong tests
+      - Code that doesn't match its stated purpose
+      Focus on finding the most severe problems you can - the more 'critical' and 'major' problems you discover, the better.
+
+      ### For Commits/Changes
+
+      - Validate that the commit message accurately describes what the changes actually do
+      - The message should not claim changes that aren't present, and should not omit significant changes
+      - Look for stray files that might be included that shouldn't have been
+      - A vague commit message (e.g., "fix bug") without detail is a major issue
+
+      ### Implementation Plans and Runbooks
+
+      When reviewing a plan, runbook, proposed patch sequence, test design, or docs change that tells another agent how to implement or verify work:
+
+      - Treat it as executable behavior, not prose-only documentation.
+      - A step that would fail as written, makes a later `Expected: PASS` unachievable, references missing variables/files/artifacts, contradicts current repository behavior, or has a command/assertion mismatch is at least **major** and blocking.
+      - A proposed test or verifier that would fail for the wrong reason, pass vacuously, or fail to check the property it claims to prove is at least **major** and blocking when the plan relies on it as a verification gate.
+      - Do not downgrade an executable plan defect because TDD, CI, a future implementer, or a careful reader might notice and fix it later.
+      - Passing a plan review is appropriate only when remaining issues are optional refinements that do not change whether the plan can be executed and verified as written.
+
+      ### Related Tests
+
+      Using static analysis only (do NOT run tests), determine:
+      - Does this change appropriately update existing tests if the changes affect tested behavior?
+      - Does it create new tests as it should, if adding testable functionality?
+      - Or do the changes not impact existing test coverage?
+      - Flag as blocking if tests should have been updated/added but weren't
+
+      ### Classification
+
+      Rate each issue:
+      - **critical**: Security vulnerabilities, data loss, crashes
+      - **major**: Bugs, significant logic errors, missing error handling, or executable plan/test steps that cannot pass as written
+      - **minor**: Code quality issues, potential edge cases
+      - **nit**: Style, naming, minor improvements
+
+      ### Unable to Review
+
+      If you cannot perform the review, you MUST fail. Examples:
+      - No changes found (no staged changes, empty diff, no commit to review)
+      - Referenced files are missing or unreadable
+      - The scope description can't be evaluated with what's in the repository
+      - Any other condition that prevents a meaningful review
+
+      Do not pass a review you could not actually perform.
+
+      ### Blocking Decision
+
+      Decide whether there are blocking issues. **Anything that isn't minor or a nit is blocking.** A significant mismatch between the commit message and the actual changes IS a blocking issue.
+
+      ### Guidelines
+
+      - If unsure, err on the side of flagging as blocking
+      - A commit message that is vague but not wrong (e.g., "fix bug") is blocking
+      - A commit message that claims something not done, or omits major changes, is blocking
+      - Consider the full context of the repository, not just the changed lines
+      - Be thorough but concise in your explanations
+
+      ### Output
+
+      List all files you examined, then report your findings:
+
+      ```
+      ## Files Examined
+      - [list each file you read/examined]
+
+      ## Issues Found
+      [For each issue:]
+      - **[severity]** `file:line` - description
+
+      ## Summary
+      [Brief summary of findings]
+
+      ---
+      **INDEPENDENT CODE REVIEW [PASSED/FAILED]**
+      ```
+
+      Use **PASSED** if no blocking issues found (only cosmetic/nit issues or no issues). When you mark a review **PASSED**, add a short note that if the invoking agent was instructed to iterate with Fresh Eyes, it should stop iterating because only minor/nit issues remain; Fresh Eyes may keep finding small improvements if asked to continue, so the goal is not to iterate until there is nothing left.
+      Use **FAILED** if any blocking issues exist. Anything that isn't cosmetic or a nit is blocking.
+      ---------- END REVIEWER INSTRUCTION ----------
+
+      (c) EXTRACT THE VERDICT: find the marker line (case-insensitive)
+          `INDEPENDENT CODE REVIEW PASSED` or `INDEPENDENT CODE REVIEW FAILED`.
+          PASSED (or only nit/cosmetic issues) => passed. FAILED, no marker, or a
+          review that could not be performed => NOT passed.
+
+      (d) APPEND this iteration's outcome (verdict, blocking issues with
+          severity + file:line, summary) to
+          `{{workspace.logs_dir}}/fresheyes-delta.md` for the recap stage.
+
+      (e) IF NOT PASSED: fix ONLY the blocking issues the reviewer raised, in the
+          worktree code. Do not reduce test coverage or skip tests to pass; add/
+          update tests as the review requires. Preserve unrelated changes by
+          other agents. COMMIT the fixes (focused, atomic). The loop re-reviews.
+          IF PASSED: make no further changes.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "passed": "true|false",
+        "verdict": "PASSED|FAILED|NO_MARKER",
+        "blocking_count": 0,
+        "summary": "<one-line summary of this iteration's findings>"
+      }
+
+  # ===========================================================================
+  # STEP 6 — Recap: per-stage findings + low-jargon summary + next steps
+  # ===========================================================================
+  - id: "recap"
+    # The agent that executes this step's instructions (this stage's worker).
+    agent: "foundation:zen-architect"
+    timeout: 1200
+    output: "final_output"
+    prompt: |
+      Produce the final recap for Dan. This is the end of "the usual": report
+      what was found at each stage, then a low-jargon summary of everything that
+      was built, plus suggested next steps.
+
+      Progress banners: do NOT print a progress banner for this step — the
+      recap itself IS the output.
+
+      Gather the record from context and the log files (read them):
+      - Load-bearing ledger:  {{load_bearing_result.ledger_path}}
+        (verified: {{load_bearing_result.verified_count}}, falsified:
+        {{load_bearing_result.falsified_count}}; acceptable-path decisions:
+        {{load_bearing_result.acceptable_decisions}})
+      - Plan fresheyes log:   {{workspace.logs_dir}}/fresheyes-plan.md
+        (final: passed={{plan_passed}})
+      - Delta fresheyes log:  {{workspace.logs_dir}}/fresheyes-delta.md
+        (final: passed={{delta_passed}})
+      - Execution notes:      {{execute_result.execution_notes}}
+        (tasks completed: {{execute_result.tasks_completed}}; final whole-branch
+        review verdict: {{execute_result.final_review_verdict}})
+      - Worktree: {{workspace.worktree_path}} on branch {{workspace.branch}};
+        original fork point: {{workspace.base_ref}}; plan: {{plan.plan_path}}.
+
+      Note if either fresheyes loop hit its iteration cap WITHOUT passing (plan
+      cap 3, delta cap 5) — that means it exited on the cap, not a clean PASS,
+      and Dan should look closer.
+
+      Write the recap as plain, low-jargon prose (Dan reads these to decide what
+      to do next — favor clarity over ceremony). Structure it as:
+
+      ## What happened at each stage
+      - Plan: <1-2 lines>
+      - Load-bearing: verified/falsified counts, the notable falsified
+        assumptions and how the plan changed, and each `acceptable` decision
+        (the claim, the alternatives considered, and why the chosen path won) —
+        presented as decisions made during the run, not items awaiting the
+        user's adjudication.
+      - Plan review (fresheyes): how many rounds, final verdict, notable
+        blockers fixed.
+      - Execution: what was built, tasks completed, final review verdict, any
+        concerns.
+      - Delta review (fresheyes): how many rounds, final verdict, notable
+        blockers fixed.
+
+      ## In plain terms, here's what got built
+      <a short, jargon-free paragraph a non-specialist could follow>
+
+      ## Suggested next steps
+      <the branch was intentionally NOT merged or finished. Offer the standard
+      finishing options — merge the branch locally, push and open a PR, keep
+      iterating, or discard — and name the worktree/branch so Dan can act.>
+
+      Return the recap as your message text (plain prose, no JSON).
