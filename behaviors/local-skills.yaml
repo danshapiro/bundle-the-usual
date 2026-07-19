@@ -1,0 +1,19 @@
+bundle:
+  name: local-skills-behavior
+  version: 1.0.0
+  description: |
+    Prepends the user-local skills directory (~/.amplifier/skills) to the
+    tool-skills source list. This behavior must be composed BEFORE the
+    upstream skills behavior (amplifier-bundle-skills behaviors/skills.yaml)
+    in bundle.app: list config values concatenate parent-first on compose,
+    so the local directory becomes the first-registered source and wins
+    first-match-wins name collisions. This enables user-local skill
+    shadowing (e.g. a forked council) and persistent discovery of
+    user-authored skills (e.g. llm-whisperer).
+    See https://github.com/microsoft/amplifier/issues/335
+
+tools:
+  - module: tool-skills
+    config:
+      skills:
+        - "/home/dan/.amplifier/skills"
