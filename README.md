@@ -29,7 +29,7 @@ issues):
 ## Install
 
 ```bash
-amplifier bundle add git+https://github.com/OWNER/bundle-the-usual@main --name the-usual
+amplifier bundle add git+https://github.com/danshapiro/bundle-the-usual@main --name the-usual
 amplifier bundle use the-usual
 ```
 
@@ -39,7 +39,7 @@ Or layer just the behavior onto your existing bundle stack — add to
 ```yaml
 bundle:
   app:
-    - git+https://github.com/OWNER/bundle-the-usual@main#subdirectory=behaviors/the-usual.yaml
+    - git+https://github.com/danshapiro/bundle-the-usual@main#subdirectory=behaviors/the-usual.yaml
 ```
 
 (For local development, a local path works in either place, e.g.
