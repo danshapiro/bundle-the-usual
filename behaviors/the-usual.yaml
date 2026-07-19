@@ -1,6 +1,6 @@
 bundle:
   name: the-usual-behavior
-  version: 1.0.0
+  version: 3.0.0
   description: Awareness for invoking "the usual" development workflow recipe
 
 context:

@@ -1,28 +1,22 @@
 # =============================================================================
-# "the usual" — Dan's standard development workflow, as an Amplifier recipe
+# "the usual" — a standard development workflow, as an Amplifier recipe
 # =============================================================================
 #
-# THIS FILE IS NOW THE CANONICAL HOME OF THE WORKFLOW.
+# THIS FILE IS THE CANONICAL HOME OF THE WORKFLOW.
 #
-# The methodology below was transplanted (one time, 2026-07-19) from Dan's
-# customized skill files under ~/.codex/skills/ — writing-plans, load-bearing
-# (+ references/subagent-prompts.md), fresheyes (fresheyes-prompt.md),
-# executing-plans, and subagent-driven-development (+ implementer-prompt.md,
-# task-reviewer-prompt.md, scripts/task-brief, scripts/review-package).
-# The full content of those files is INLINED into the step prompts, adapted for
-# Amplifier only where the original text was platform-specific (subagent
-# dispatch -> delegate tool; shell/PID-polling machinery -> context_depth +
-# provider_preferences; script files -> inline bash). No step reads anything
-# from ~/.codex/skills/ at runtime.
+# Ported from the author's customized development-workflow skills (writing-plans,
+# load-bearing, fresheyes, executing-plans, subagent-driven-development); the
+# full methodology is INLINED into the step prompts, adapted for Amplifier where
+# the original text was platform-specific (subagent dispatch -> delegate tool;
+# shell/PID-polling machinery -> context_depth + provider_preferences; script
+# files -> inline bash). EDITS TO THE WORKFLOW SHOULD BE MADE HERE.
 #
-# EDITS TO THE WORKFLOW SHOULD NOW BE MADE HERE, not in the old skill files.
+# Two skills are still loaded by name at runtime because the author's copies
+# were byte-identical to the stock superpowers versions (verified by diff):
+# using-git-worktrees (Step 0) and requesting-code-review (final whole-branch
+# review template in Step 4).
 #
-# Two skills are still loaded by name at runtime because Dan's copies are
-# byte-identical to the stock superpowers versions (verified by diff), so the
-# stock skill IS his version: using-git-worktrees (Step 0) and
-# requesting-code-review (final whole-branch review template in Step 4).
-#
-# The 7-stage workflow (verbatim semantics from Dan's ~/.codex/AGENTS.md):
+# The 7-stage workflow:
 #   1. writing-plans -> write a plan
 #   2. load-bearing on the plan; fix what comes up
 #   3. fresheyes on the plan, fix, until PASS or 3x
@@ -39,6 +33,23 @@
 # =============================================================================
 # CHANGELOG
 # =============================================================================
+#
+# v3.0.0 (2026-07-19):
+#   - BREAKING: all personal information removed (personal names, home paths,
+#     personal skill-file provenance); neutral wording throughout, author
+#     metadata neutralized.
+#   - NEW: review-failure recap ending — if the delta review never passed, the
+#     recap ends with an unmissable warning block listing each remaining
+#     blocking issue as one plain-language line, and "Suggested next steps"
+#     leads with fixes instead of merging; a plan-review miss is noted in the
+#     same block.
+#   - NEW: Step 4 output gains total_tasks alongside tasks_completed; the
+#     recap states "N of M tasks completed" and visibly flags partial
+#     completion.
+#   - CHANGED: the fresheyes reviewer prompt is now defined ONCE as shared
+#     context variables (fresheyes_reviewer_head / fresheyes_reviewer_body),
+#     spliced around each review step's scope sentence — replacing the two
+#     verbatim copies in Steps 3 and 5.
 #
 # v2.1.0 (2026-07-19):
 #   - CHANGED: residual-risk semantics. Ledger status `accepted-risk` renamed to
@@ -58,9 +69,9 @@
 #
 # v2.0.0 (2026-07-19):
 #   - BREAKING REDESIGN: fully self-contained. All skill content INLINED into
-#     step prompts (Dan rejected the runtime-file-read design). The recipe is
-#     now the single canonical home of the workflow; ~/.codex/skills/ files
-#     were the one-time source.
+#     step prompts (the runtime-file-read design was rejected). The recipe is
+#     now the single canonical home of the workflow; the author's personal
+#     skill files were the one-time source.
 #     * Step 1 carries the complete writing-plans methodology (incl. Self-Review
 #       item 1b), minus the Execution Handoff (the recipe fixes the path).
 #     * Step 2 carries the complete load-bearing methodology + the three
@@ -72,14 +83,14 @@
 #       scripts/task-brief and scripts/review-package as inline bash.
 #
 # v1.0.0 (2026-07-18):
-#   - Initial port using runtime reads of ~/.codex/skills/ files (superseded).
+#   - Initial port using runtime reads of personal skill files (superseded).
 #
 # =============================================================================
 
 name: "the-usual"
-description: "Dan's standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "2.1.0"
-author: "ported for Dan by recipes:recipe-author"
+description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
+version: "3.0.0"
+author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
 context:
@@ -95,13 +106,127 @@ context:
   plan_passed: "false"          # set true when the plan clears fresheyes
   delta_passed: "false"         # set true when the delta clears fresheyes
 
+  # ---- Shared fresheyes reviewer prompt (single canonical definition) ---------
+  # Steps 3 and 5 splice these around their own scope sentence; the delegated
+  # reviewer receives head + scope + body as its ENTIRE instruction.
+  fresheyes_reviewer_head: |-
+    You are a detailed, thorough, patient senior engineer who is performing a detailed review of a less capable engineer's work. Assume nothing, take nothing for granted.
+
+    Do not invoke or load any skills, plugins, subprocess reviewers, secondary agents, or review wrappers.
+
+    ### What to Review
+  fresheyes_reviewer_body: |-
+    ### Context Gathering
+
+    - Read relevant repository files (e.g., AGENTS.md, README.md, related source files) for context.
+    - Examine the code structure and patterns used in the codebase
+    - Understand the purpose and intent of the changes
+    - You may inspect the repo with read-only git commands: git diff, git status -sb, git show, git log
+    - Err on the side of more research rather than less
+    - Any time you see an open question, go back and research further
+    - You may search the web for documentation, substantiation, or any other purpose
+    - Shell commands must be bounded. Use `timeout 300s` around any command that could take a while.
+    - Do NOT modify files
+    - Do NOT run git commit/push/rebase, change branches, or apply patches
+
+    ### Review For
+
+    Review for ANYTHING that is wrong. This includes but is not limited to:
+    - Architectural inconsistencies or patterns that are non-idiomatic for the language or codebase.
+    - Correctness bugs and logic errors
+    - Missing edge cases
+    - Misuse of frameworks/APIs
+    - Security issues (injection, XSS, auth bypasses, etc.)
+    - Performance pitfalls
+    - Inconsistent error handling/logging
+    - Missing or obviously wrong tests
+    - Code that doesn't match its stated purpose
+    Focus on finding the most severe problems you can - the more 'critical' and 'major' problems you discover, the better.
+
+    ### For Commits/Changes
+
+    - Validate that the commit message accurately describes what the changes actually do
+    - The message should not claim changes that aren't present, and should not omit significant changes
+    - Look for stray files that might be included that shouldn't have been
+    - A vague commit message (e.g., "fix bug") without detail is a major issue
+
+    ### Implementation Plans and Runbooks
+
+    When reviewing a plan, runbook, proposed patch sequence, test design, or docs change that tells another agent how to implement or verify work:
+
+    - Treat it as executable behavior, not prose-only documentation.
+    - A step that would fail as written, makes a later `Expected: PASS` unachievable, references missing variables/files/artifacts, contradicts current repository behavior, or has a command/assertion mismatch is at least **major** and blocking.
+    - A proposed test or verifier that would fail for the wrong reason, pass vacuously, or fail to check the property it claims to prove is at least **major** and blocking when the plan relies on it as a verification gate.
+    - Do not downgrade an executable plan defect because TDD, CI, a future implementer, or a careful reader might notice and fix it later.
+    - Passing a plan review is appropriate only when remaining issues are optional refinements that do not change whether the plan can be executed and verified as written.
+
+    ### Related Tests
+
+    Using static analysis only (do NOT run tests), determine:
+    - Does this change appropriately update existing tests if the changes affect tested behavior?
+    - Does it create new tests as it should, if adding testable functionality?
+    - Or do the changes not impact existing test coverage?
+    - Flag as blocking if tests should have been updated/added but weren't
+
+    ### Classification
+
+    Rate each issue:
+    - **critical**: Security vulnerabilities, data loss, crashes
+    - **major**: Bugs, significant logic errors, missing error handling, or executable plan/test steps that cannot pass as written
+    - **minor**: Code quality issues, potential edge cases
+    - **nit**: Style, naming, minor improvements
+
+    ### Unable to Review
+
+    If you cannot perform the review, you MUST fail. Examples:
+    - No changes found (no staged changes, empty diff, no commit to review)
+    - Referenced files are missing or unreadable
+    - The scope description can't be evaluated with what's in the repository
+    - Any other condition that prevents a meaningful review
+
+    Do not pass a review you could not actually perform.
+
+    ### Blocking Decision
+
+    Decide whether there are blocking issues. **Anything that isn't minor or a nit is blocking.** A significant mismatch between the commit message and the actual changes IS a blocking issue.
+
+    ### Guidelines
+
+    - If unsure, err on the side of flagging as blocking
+    - A commit message that is vague but not wrong (e.g., "fix bug") is blocking
+    - A commit message that claims something not done, or omits major changes, is blocking
+    - Consider the full context of the repository, not just the changed lines
+    - Be thorough but concise in your explanations
+
+    ### Output
+
+    List all files you examined, then report your findings:
+
+    ```
+    ## Files Examined
+    - [list each file you read/examined]
+
+    ## Issues Found
+    [For each issue:]
+    - **[severity]** `file:line` - description
+
+    ## Summary
+    [Brief summary of findings]
+
+    ---
+    **INDEPENDENT CODE REVIEW [PASSED/FAILED]**
+    ```
+
+    Use **PASSED** if no blocking issues found (only cosmetic/nit issues or no issues). When you mark a review **PASSED**, add a short note that if the invoking agent was instructed to iterate with Fresh Eyes, it should stop iterating because only minor/nit issues remain; Fresh Eyes may keep finding small improvements if asked to continue, so the goal is not to iterate until there is nothing left.
+    Use **FAILED** if any blocking issues exist. Anything that isn't cosmetic or a nit is blocking.
+
 steps:
   # ===========================================================================
   # STEP 0 — Workspace: isolated git worktree + record the "original fork" ref
   #
   # NOTE: this step loads using-git-worktrees by NAME. That is deliberate and
-  # safe: Dan's copy of that skill is byte-identical to stock, so the stock
-  # skill IS his version. Everything else in this recipe is inlined.
+  # safe: the author's copy of that skill was byte-identical to stock.
+  # Everything else in this recipe is inlined.
   # ===========================================================================
   - id: "workspace-setup"
     # The agent that executes this step's instructions (this stage's worker).
@@ -111,7 +236,7 @@ steps:
     parse_json: true
     prompt: |
       You are setting up an isolated workspace for a development workflow. Follow
-      Dan's workspace discipline exactly. Do NOT substitute your own conventions.
+      the user's workspace discipline exactly. Do NOT substitute your own conventions.
 
       Inputs:
       - Target repo: {{repo_path}}
@@ -164,7 +289,7 @@ steps:
     parse_json: true
     prompt: |
       Write the implementation plan for this task by following the methodology
-      below EXACTLY. It is Dan's writing-plans discipline, inlined in full.
+      below EXACTLY. It is the user's writing-plans discipline, inlined in full.
 
       PROGRESS BANNER (mandatory, fixed policy — no discretion): FIRST, before
       any other work, print the following banner as plain visible response text
@@ -396,7 +521,7 @@ steps:
       - Save the plan at `docs/plans/YYYY-MM-DD-<feature-slug>.md`
         inside the worktree (today's date via `date +%F`; slug "{{workspace.slug}}").
       - Cross-cutting rules (complete as stated): README.md is the only end-user
-        markdown doc unless he asked for others — the plan under docs/plans/
+        markdown doc unless the user asked for others — the plan under docs/plans/
         is a working/agent doc and is fine. Keep commits focused and atomic.
       - COMMIT the plan to the worktree branch (the fresheyes review stage only
         reviews committed work). Use a focused commit message, e.g.
@@ -956,117 +1081,11 @@ steps:
               the instruction text. Use a general-purpose delegation target.
 
       ---------- BEGIN REVIEWER INSTRUCTION (send verbatim) ----------
-      You are a detailed, thorough, patient senior engineer who is performing a detailed review of a less capable engineer's work. Assume nothing, take nothing for granted.
-
-      Do not invoke or load any skills, plugins, subprocess reviewers, secondary agents, or review wrappers.
-
-      ### What to Review
+      {{fresheyes_reviewer_head}}
 
       Review the plan in {{plan.plan_path}}.
 
-      ### Context Gathering
-
-      - Read relevant repository files (e.g., AGENTS.md, README.md, related source files) for context.
-      - Examine the code structure and patterns used in the codebase
-      - Understand the purpose and intent of the changes
-      - You may inspect the repo with read-only git commands: git diff, git status -sb, git show, git log
-      - Err on the side of more research rather than less
-      - Any time you see an open question, go back and research further
-      - You may search the web for documentation, substantiation, or any other purpose
-      - Shell commands must be bounded. Use `timeout 300s` around any command that could take a while.
-      - Do NOT modify files
-      - Do NOT run git commit/push/rebase, change branches, or apply patches
-
-      ### Review For
-
-      Review for ANYTHING that is wrong. This includes but is not limited to:
-      - Architectural inconsistencies or patterns that are non-idiomatic for the language or codebase.
-      - Correctness bugs and logic errors
-      - Missing edge cases
-      - Misuse of frameworks/APIs
-      - Security issues (injection, XSS, auth bypasses, etc.)
-      - Performance pitfalls
-      - Inconsistent error handling/logging
-      - Missing or obviously wrong tests
-      - Code that doesn't match its stated purpose
-      Focus on finding the most severe problems you can - the more 'critical' and 'major' problems you discover, the better.
-
-      ### For Commits/Changes
-
-      - Validate that the commit message accurately describes what the changes actually do
-      - The message should not claim changes that aren't present, and should not omit significant changes
-      - Look for stray files that might be included that shouldn't have been
-      - A vague commit message (e.g., "fix bug") without detail is a major issue
-
-      ### Implementation Plans and Runbooks
-
-      When reviewing a plan, runbook, proposed patch sequence, test design, or docs change that tells another agent how to implement or verify work:
-
-      - Treat it as executable behavior, not prose-only documentation.
-      - A step that would fail as written, makes a later `Expected: PASS` unachievable, references missing variables/files/artifacts, contradicts current repository behavior, or has a command/assertion mismatch is at least **major** and blocking.
-      - A proposed test or verifier that would fail for the wrong reason, pass vacuously, or fail to check the property it claims to prove is at least **major** and blocking when the plan relies on it as a verification gate.
-      - Do not downgrade an executable plan defect because TDD, CI, a future implementer, or a careful reader might notice and fix it later.
-      - Passing a plan review is appropriate only when remaining issues are optional refinements that do not change whether the plan can be executed and verified as written.
-
-      ### Related Tests
-
-      Using static analysis only (do NOT run tests), determine:
-      - Does this change appropriately update existing tests if the changes affect tested behavior?
-      - Does it create new tests as it should, if adding testable functionality?
-      - Or do the changes not impact existing test coverage?
-      - Flag as blocking if tests should have been updated/added but weren't
-
-      ### Classification
-
-      Rate each issue:
-      - **critical**: Security vulnerabilities, data loss, crashes
-      - **major**: Bugs, significant logic errors, missing error handling, or executable plan/test steps that cannot pass as written
-      - **minor**: Code quality issues, potential edge cases
-      - **nit**: Style, naming, minor improvements
-
-      ### Unable to Review
-
-      If you cannot perform the review, you MUST fail. Examples:
-      - No changes found (no staged changes, empty diff, no commit to review)
-      - Referenced files are missing or unreadable
-      - The scope description can't be evaluated with what's in the repository
-      - Any other condition that prevents a meaningful review
-
-      Do not pass a review you could not actually perform.
-
-      ### Blocking Decision
-
-      Decide whether there are blocking issues. **Anything that isn't minor or a nit is blocking.** A significant mismatch between the commit message and the actual changes IS a blocking issue.
-
-      ### Guidelines
-
-      - If unsure, err on the side of flagging as blocking
-      - A commit message that is vague but not wrong (e.g., "fix bug") is blocking
-      - A commit message that claims something not done, or omits major changes, is blocking
-      - Consider the full context of the repository, not just the changed lines
-      - Be thorough but concise in your explanations
-
-      ### Output
-
-      List all files you examined, then report your findings:
-
-      ```
-      ## Files Examined
-      - [list each file you read/examined]
-
-      ## Issues Found
-      [For each issue:]
-      - **[severity]** `file:line` - description
-
-      ## Summary
-      [Brief summary of findings]
-
-      ---
-      **INDEPENDENT CODE REVIEW [PASSED/FAILED]**
-      ```
-
-      Use **PASSED** if no blocking issues found (only cosmetic/nit issues or no issues). When you mark a review **PASSED**, add a short note that if the invoking agent was instructed to iterate with Fresh Eyes, it should stop iterating because only minor/nit issues remain; Fresh Eyes may keep finding small improvements if asked to continue, so the goal is not to iterate until there is nothing left.
-      Use **FAILED** if any blocking issues exist. Anything that isn't cosmetic or a nit is blocking.
+      {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
 
       (c) EXTRACT THE VERDICT: from the reviewer's returned text, find the marker
@@ -1842,19 +1861,21 @@ steps:
       - NEVER reduce test coverage or skip/disable tests to make things pass.
       - Preserve unrelated changes from other agents in the same repo.
       - Commits stay focused and atomic.
-      - README.md is the only end-user markdown doc unless Dan requested others.
+      - README.md is the only end-user markdown doc unless the user requested others.
 
       HALT rule: per "When to Stop and Ask for Help" — on a real blocker
       (missing dependency, repeatedly failing verification, unclear instruction,
       critical plan gap, unresolvable plan contradiction) STOP and report it
       rather than guessing. Represent that as blocked=true below; a guard step
-      will fail the recipe with your message so Dan can intervene.
+      will fail the recipe with your message so the user can intervene.
 
-      Return ONLY a JSON object (no prose, no fences) with exactly:
+      Return ONLY a JSON object (no prose, no fences) with exactly
+      (total_tasks = the total task count from the plan):
       {
         "blocked": "true|false",
         "blocked_reason": "<empty unless blocked; then the specific blocker>",
         "tasks_completed": 0,
+        "total_tasks": 0,
         "final_review_verdict": "<the final whole-branch reviewer's verdict, or 'n/a' if blocked>",
         "execution_notes": "<2-4 sentence factual summary of what was built and any concerns>"
       }
@@ -1930,117 +1951,11 @@ steps:
           The reviewer works from the worktree at {{workspace.worktree_path}}.
 
       ---------- BEGIN REVIEWER INSTRUCTION (send verbatim) ----------
-      You are a detailed, thorough, patient senior engineer who is performing a detailed review of a less capable engineer's work. Assume nothing, take nothing for granted.
-
-      Do not invoke or load any skills, plugins, subprocess reviewers, secondary agents, or review wrappers.
-
-      ### What to Review
+      {{fresheyes_reviewer_head}}
 
       Review the changes between {{workspace.base_ref}} and HEAD using git diff {{workspace.base_ref}}...HEAD.
 
-      ### Context Gathering
-
-      - Read relevant repository files (e.g., AGENTS.md, README.md, related source files) for context.
-      - Examine the code structure and patterns used in the codebase
-      - Understand the purpose and intent of the changes
-      - You may inspect the repo with read-only git commands: git diff, git status -sb, git show, git log
-      - Err on the side of more research rather than less
-      - Any time you see an open question, go back and research further
-      - You may search the web for documentation, substantiation, or any other purpose
-      - Shell commands must be bounded. Use `timeout 300s` around any command that could take a while.
-      - Do NOT modify files
-      - Do NOT run git commit/push/rebase, change branches, or apply patches
-
-      ### Review For
-
-      Review for ANYTHING that is wrong. This includes but is not limited to:
-      - Architectural inconsistencies or patterns that are non-idiomatic for the language or codebase.
-      - Correctness bugs and logic errors
-      - Missing edge cases
-      - Misuse of frameworks/APIs
-      - Security issues (injection, XSS, auth bypasses, etc.)
-      - Performance pitfalls
-      - Inconsistent error handling/logging
-      - Missing or obviously wrong tests
-      - Code that doesn't match its stated purpose
-      Focus on finding the most severe problems you can - the more 'critical' and 'major' problems you discover, the better.
-
-      ### For Commits/Changes
-
-      - Validate that the commit message accurately describes what the changes actually do
-      - The message should not claim changes that aren't present, and should not omit significant changes
-      - Look for stray files that might be included that shouldn't have been
-      - A vague commit message (e.g., "fix bug") without detail is a major issue
-
-      ### Implementation Plans and Runbooks
-
-      When reviewing a plan, runbook, proposed patch sequence, test design, or docs change that tells another agent how to implement or verify work:
-
-      - Treat it as executable behavior, not prose-only documentation.
-      - A step that would fail as written, makes a later `Expected: PASS` unachievable, references missing variables/files/artifacts, contradicts current repository behavior, or has a command/assertion mismatch is at least **major** and blocking.
-      - A proposed test or verifier that would fail for the wrong reason, pass vacuously, or fail to check the property it claims to prove is at least **major** and blocking when the plan relies on it as a verification gate.
-      - Do not downgrade an executable plan defect because TDD, CI, a future implementer, or a careful reader might notice and fix it later.
-      - Passing a plan review is appropriate only when remaining issues are optional refinements that do not change whether the plan can be executed and verified as written.
-
-      ### Related Tests
-
-      Using static analysis only (do NOT run tests), determine:
-      - Does this change appropriately update existing tests if the changes affect tested behavior?
-      - Does it create new tests as it should, if adding testable functionality?
-      - Or do the changes not impact existing test coverage?
-      - Flag as blocking if tests should have been updated/added but weren't
-
-      ### Classification
-
-      Rate each issue:
-      - **critical**: Security vulnerabilities, data loss, crashes
-      - **major**: Bugs, significant logic errors, missing error handling, or executable plan/test steps that cannot pass as written
-      - **minor**: Code quality issues, potential edge cases
-      - **nit**: Style, naming, minor improvements
-
-      ### Unable to Review
-
-      If you cannot perform the review, you MUST fail. Examples:
-      - No changes found (no staged changes, empty diff, no commit to review)
-      - Referenced files are missing or unreadable
-      - The scope description can't be evaluated with what's in the repository
-      - Any other condition that prevents a meaningful review
-
-      Do not pass a review you could not actually perform.
-
-      ### Blocking Decision
-
-      Decide whether there are blocking issues. **Anything that isn't minor or a nit is blocking.** A significant mismatch between the commit message and the actual changes IS a blocking issue.
-
-      ### Guidelines
-
-      - If unsure, err on the side of flagging as blocking
-      - A commit message that is vague but not wrong (e.g., "fix bug") is blocking
-      - A commit message that claims something not done, or omits major changes, is blocking
-      - Consider the full context of the repository, not just the changed lines
-      - Be thorough but concise in your explanations
-
-      ### Output
-
-      List all files you examined, then report your findings:
-
-      ```
-      ## Files Examined
-      - [list each file you read/examined]
-
-      ## Issues Found
-      [For each issue:]
-      - **[severity]** `file:line` - description
-
-      ## Summary
-      [Brief summary of findings]
-
-      ---
-      **INDEPENDENT CODE REVIEW [PASSED/FAILED]**
-      ```
-
-      Use **PASSED** if no blocking issues found (only cosmetic/nit issues or no issues). When you mark a review **PASSED**, add a short note that if the invoking agent was instructed to iterate with Fresh Eyes, it should stop iterating because only minor/nit issues remain; Fresh Eyes may keep finding small improvements if asked to continue, so the goal is not to iterate until there is nothing left.
-      Use **FAILED** if any blocking issues exist. Anything that isn't cosmetic or a nit is blocking.
+      {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
 
       (c) EXTRACT THE VERDICT: find the marker line (case-insensitive)
@@ -2075,7 +1990,7 @@ steps:
     timeout: 1200
     output: "final_output"
     prompt: |
-      Produce the final recap for Dan. This is the end of "the usual": report
+      Produce the final recap for the user. This is the end of "the usual": report
       what was found at each stage, then a low-jargon summary of everything that
       was built, plus suggested next steps.
 
@@ -2092,17 +2007,18 @@ steps:
       - Delta fresheyes log:  {{workspace.logs_dir}}/fresheyes-delta.md
         (final: passed={{delta_passed}})
       - Execution notes:      {{execute_result.execution_notes}}
-        (tasks completed: {{execute_result.tasks_completed}}; final whole-branch
-        review verdict: {{execute_result.final_review_verdict}})
+        (tasks completed: {{execute_result.tasks_completed}} of
+        {{execute_result.total_tasks}}; final whole-branch review verdict:
+        {{execute_result.final_review_verdict}})
       - Worktree: {{workspace.worktree_path}} on branch {{workspace.branch}};
         original fork point: {{workspace.base_ref}}; plan: {{plan.plan_path}}.
 
       Note if either fresheyes loop hit its iteration cap WITHOUT passing (plan
       cap 3, delta cap 5) — that means it exited on the cap, not a clean PASS,
-      and Dan should look closer.
+      and the user should look closer.
 
-      Write the recap as plain, low-jargon prose (Dan reads these to decide what
-      to do next — favor clarity over ceremony). Structure it as:
+      Write the recap as plain, low-jargon prose (the user reads these to decide
+      what to do next — favor clarity over ceremony). Structure it as:
 
       ## What happened at each stage
       - Plan: <1-2 lines>
@@ -2113,8 +2029,10 @@ steps:
         user's adjudication.
       - Plan review (fresheyes): how many rounds, final verdict, notable
         blockers fixed.
-      - Execution: what was built, tasks completed, final review verdict, any
-        concerns.
+      - Execution: what was built, final review verdict, any concerns. State
+        "N of M tasks completed" (N = tasks_completed, M = total_tasks). If
+        N < M, visually flag the partial completion on its own line (e.g.
+        "!! PARTIAL: only N of M tasks completed") — do not bury it.
       - Delta review (fresheyes): how many rounds, final verdict, notable
         blockers fixed.
 
@@ -2124,6 +2042,30 @@ steps:
       ## Suggested next steps
       <the branch was intentionally NOT merged or finished. Offer the standard
       finishing options — merge the branch locally, push and open a PR, keep
-      iterating, or discard — and name the worktree/branch so Dan can act.>
+      iterating, or discard — and name the worktree/branch so the user can act.>
+
+      Review-failure ending (mandatory, conditional):
+      - If delta_passed is not 'true' (current value: {{delta_passed}}), the
+        recap MUST END with a clearly set-apart warning block that cannot be
+        missed, in this style:
+
+        !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+        !!! WARNING: THE FINAL CODE DID NOT PASS INDEPENDENT REVIEW
+        !!! after all review attempts. Remaining blocking issues:
+        !!! - <issue 1>
+        !!! - <issue 2>
+        !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+
+        Read the remaining blocking issues from the FINAL iteration's entry in
+        {{workspace.logs_dir}}/fresheyes-delta.md and describe EACH one in a
+        single line of plain language a non-programmer can follow (what is
+        wrong and what it could affect — no jargon). One line per issue.
+        In this case, "Suggested next steps" must NOT recommend merging — lead
+        with fixing the listed issues instead.
+      - If plan_passed is not 'true' (current value: {{plan_passed}}), add a
+        one-line note to the same warning block that the plan never passed its
+        independent review. If the delta review passed but the plan review did
+        not, still emit the warning block, containing that note alone.
+      - If both passed: no warning block — end normally.
 
       Return the recap as your message text (plain prose, no JSON).
