@@ -34,6 +34,29 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.0.1 (2026-07-20):
+#   - BUGFIX: the fresheyes reviewer instructions now self-locate the git
+#     worktree under review.
+#     * ROOT CAUSE: the delegated cross-model reviewer runs with
+#       context_depth="none" and receives ONLY the verbatim BEGIN/END block,
+#       which never stated WHERE the repository under review lives. The
+#       reviewer's working directory could be the main repo (where
+#       HEAD == base_ref, the fork point), so `git diff base_ref...HEAD`
+#       returned an EMPTY diff and every delta review failed with "unable to
+#       review". The worktree-path note sat OUTSIDE the verbatim block, so it
+#       never reached the reviewer.
+#     * FIX: the Step 3 (plan) and Step 5 (delta) scope sentences spliced
+#       between fresheyes_reviewer_head/body now tell the reviewer the repo is
+#       the worktree at {{workspace.worktree_path}}, that its cwd may differ,
+#       and that every git command must use `git -C {{workspace.worktree_path}}
+#       ...` and every repo file read must be under that path. The delta scope
+#       adds an empty-diff sanity check (compare `git -C <wt> rev-parse HEAD`
+#       to base_ref before concluding "no changes"). The misleading controller
+#       note was corrected to say the reviewer cwd is NOT guaranteed to be the
+#       worktree.
+#     * RESULT: the reviewer targets the correct repository regardless of its
+#       working directory; empty base_ref...HEAD diffs no longer fail reviews.
+#
 # v3.0.0 (2026-07-19):
 #   - BREAKING: all personal information removed (personal names, home paths,
 #     personal skill-file provenance); neutral wording throughout, author
@@ -89,7 +112,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.0.0"
+version: "3.0.1"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -1083,7 +1106,9 @@ steps:
       ---------- BEGIN REVIEWER INSTRUCTION (send verbatim) ----------
       {{fresheyes_reviewer_head}}
 
-      Review the plan in {{plan.plan_path}}.
+      The repository under review is a git worktree at {{workspace.worktree_path}}. Your current working directory may be a DIFFERENT directory, so run every git command as `git -C {{workspace.worktree_path}} ...` (or cd into that path first), and read every repository file (AGENTS.md, README.md, related source) from under that path.
+
+      Review the plan at {{plan.plan_path}}.
 
       {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
@@ -1948,12 +1973,19 @@ steps:
               (provider_preferences pins the reviewer model, so no model_role is
               needed on this dispatch)
             - No specialized reviewer agent/persona; general-purpose target only.
-          The reviewer works from the worktree at {{workspace.worktree_path}}.
+          NOTE: the reviewer's working directory is NOT guaranteed to be the
+          worktree, which is why the verbatim instruction below carries the
+          worktree path itself. Still send the block verbatim — nothing added,
+          nothing removed.
 
       ---------- BEGIN REVIEWER INSTRUCTION (send verbatim) ----------
       {{fresheyes_reviewer_head}}
 
-      Review the changes between {{workspace.base_ref}} and HEAD using git diff {{workspace.base_ref}}...HEAD.
+      The repository under review is a git worktree at {{workspace.worktree_path}}. Your current working directory may be a DIFFERENT directory, so run every git command as `git -C {{workspace.worktree_path}} ...` (or cd into that path first), and read every repository file (AGENTS.md, README.md, related source) from under that path.
+
+      Review the changes between {{workspace.base_ref}} and the worktree's HEAD using `git -C {{workspace.worktree_path}} diff {{workspace.base_ref}}...HEAD`.
+
+      Empty-diff sanity check: before concluding there are no changes, run `git -C {{workspace.worktree_path}} rev-parse HEAD` and compare it to {{workspace.base_ref}}. If the SHAs differ but the diff appears empty, your command targeted the wrong directory (not the worktree) — re-run it with the `-C {{workspace.worktree_path}}` flag rather than failing with "no changes found".
 
       {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
