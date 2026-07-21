@@ -34,6 +34,22 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.2.0 (2026-07-21):
+#   - NEW: DELEGATION MANDATE in the heavy steps (write-plan, load-bearing,
+#     execute-plan) and both fresheyes fix sections — all repo exploration via
+#     delegate (foundation:explorer), never direct reads/grep. Evidence: killed
+#     run's step agents made 55-110 direct read_file calls (449-836KB into
+#     their own window) vs only 2-3 delegate calls.
+#   - NEW: explorer report protocol — delegated explorers write full reports
+#     to {{workspace.logs_dir}}/reports/<topic>.md and return path + <=500-token
+#     summary. Evidence: delegate returns totaled 23-27KB while direct reads
+#     ballooned the step window until compaction fired on 96-98% of turns.
+#   - CHANGED: steps now run on the bundle-local the-usual:step-runner agent
+#     (minimal ~2KB definition, lean tool loadout) instead of
+#     foundation:zen-architect. Evidence: zen-architect's ~132KB definition +
+#     ~128KB tool schemas consumed the executor's entire ~59k-token compaction
+#     budget as fixed per-request tax.
+#
 # v3.1.0 (2026-07-21):
 #   - NEW: output-contract armor + retry-recovery protocol for slow/small-
 #     context executors. Every JSON-output step now opens with a CRITICAL
@@ -122,7 +138,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.1.0"
+version: "3.2.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -263,7 +279,7 @@ steps:
   # ===========================================================================
   - id: "workspace-setup"
     # The agent that executes this step's instructions (this stage's worker).
-    agent: "foundation:zen-architect"
+    agent: "the-usual:step-runner"
     timeout: 864000
     output: "workspace"
     parse_json: true
@@ -354,7 +370,7 @@ steps:
   # ===========================================================================
   - id: "write-plan"
     # The agent that executes this step's instructions (this stage's worker).
-    agent: "foundation:zen-architect"
+    agent: "the-usual:step-runner"
     timeout: 864000
     output: "plan"
     parse_json: true
@@ -390,6 +406,24 @@ steps:
           missing receipt failed it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, and make the completed JSON your final message.
+
+      DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
+      agent's context is the scarcest resource in the pipeline; exploration
+      belongs in disposable subagent contexts. ALL repository exploration
+      MUST go through the delegate tool — use foundation:explorer for surveys
+      and any multi-file reading, one delegate per topic, dispatched in
+      parallel when topics are independent. You must NOT read repository
+      files directly and must NOT use bash/grep/glob for exploration (no
+      cat/grep/find/head over repo files). Direct file access is permitted
+      ONLY for: files this step itself writes (the plan file,
+      pending-output.json, the ledger, logs), reading back your own
+      artifacts, and running git/build/test commands via bash.
+      EXPLORER REPORT PROTOCOL: instruct every delegated explorer to WRITE
+      its full report to {{workspace.logs_dir}}/reports/<topic>.md (create
+      the reports dir with mkdir -p once, first) and to RETURN only that
+      file path plus a summary of at most ~500 tokens. Work from the
+      summaries; read specific report sections only when needed (bounded
+      reads), never whole reports by reflex.
 
       Write the implementation plan for this task by following the methodology
       below EXACTLY. It is the user's writing-plans discipline, inlined in full.
@@ -641,7 +675,7 @@ steps:
   # ===========================================================================
   - id: "load-bearing"
     # The agent that executes this step's instructions (this stage's worker).
-    agent: "foundation:zen-architect"
+    agent: "the-usual:step-runner"
     timeout: 864000
     output: "load_bearing_result"
     parse_json: true
@@ -683,6 +717,24 @@ steps:
       (c) FINISH — when your work is done, read that file back, fill in real
           values, and make the completed JSON your final message.
 
+      DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
+      agent's context is the scarcest resource in the pipeline; exploration
+      belongs in disposable subagent contexts. ALL repository exploration
+      MUST go through the delegate tool — use foundation:explorer for surveys
+      and any multi-file reading, one delegate per topic, dispatched in
+      parallel when topics are independent. You must NOT read repository
+      files directly and must NOT use bash/grep/glob for exploration (no
+      cat/grep/find/head over repo files). Direct file access is permitted
+      ONLY for: files this step itself writes (the plan file,
+      pending-output.json, the ledger, logs), reading back your own
+      artifacts, and running git/build/test commands via bash.
+      EXPLORER REPORT PROTOCOL: instruct every delegated explorer to WRITE
+      its full report to {{workspace.logs_dir}}/reports/<topic>.md (create
+      the reports dir with mkdir -p once, first) and to RETURN only that
+      file path plus a summary of at most ~500 tokens. Work from the
+      summaries; read specific report sections only when needed (bounded
+      reads), never whole reports by reflex.
+
       Surface and verify the load-bearing assumptions of the plan, then fix the
       plan accordingly. The complete methodology and the exact subagent prompt
       templates are inlined below — follow them faithfully.
@@ -716,6 +768,13 @@ steps:
       Logs dir:          {{workspace.logs_dir}}
 
       Amplifier translation of the subagent mechanics (applies throughout):
+      - File-report pattern (appended to every dispatch, on top of each
+        template's own requirements): instruct the finder, strategist, and
+        each validator to WRITE their full output/evidence to
+        {{workspace.logs_dir}}/reports/<role-or-ID>.md and RETURN the
+        template's required structured output in summary form, at most ~500
+        tokens, plus the report path. Judge from the structured summaries;
+        read report sections only when the evidence needs closer inspection.
       - "Spawn a stateful subagent" = call the delegate tool with
         model_role="reasoning"; capture the returned session_id; send follow-up
         feedback by RESUMING that same session (delegate again with the same
@@ -1165,7 +1224,7 @@ steps:
   # ===========================================================================
   - id: "fresheyes-plan"
     # The agent that executes this step's instructions (this stage's worker).
-    agent: "foundation:zen-architect"
+    agent: "the-usual:step-runner"
     timeout: 864000
     output: "fresheyes_plan_result"
     parse_json: true
@@ -1209,6 +1268,21 @@ steps:
           only its missing receipt failed it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, and make the completed JSON your final message.
+
+      DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
+      agent's context is the scarcest resource in the pipeline; exploration
+      belongs in disposable subagent contexts. If understanding or fixing
+      the reviewer's blocking issues requires repository exploration, it
+      MUST go through the delegate tool (foundation:explorer for surveys
+      and any multi-file reading; one delegate per topic; parallel when
+      independent) — do NOT read repository files directly and do NOT use
+      bash/grep/glob for exploration. Direct file access is permitted ONLY
+      for: files this step itself writes (the plan file, pending-output.json,
+      logs), reading back your own artifacts, and git/build/test commands
+      via bash. EXPLORER REPORT PROTOCOL: instruct every delegated explorer
+      to WRITE its full report to {{workspace.logs_dir}}/reports/<topic>.md
+      (mkdir -p the reports dir first) and RETURN only that file path plus a
+      summary of at most ~500 tokens; work from summaries with bounded reads.
 
       Run ONE fresheyes review iteration on the PLAN. Fresheyes is a truly
       independent, cross-model review: the reviewer gets zero conversation
@@ -1298,7 +1372,7 @@ steps:
   - id: "execute-plan"
     # The agent that executes this step's instructions (this stage's worker —
     # it acts as the SDD "controller", dispatching implementers and reviewers).
-    agent: "foundation:zen-architect"
+    agent: "the-usual:step-runner"
     timeout: 864000
     output: "execute_result"
     parse_json: true
@@ -1341,6 +1415,24 @@ steps:
       (c) FINISH — when your work is done, read that file back, fill in real
           values, and make the completed JSON your final message.
 
+      DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
+      agent's context is the scarcest resource in the pipeline; exploration
+      belongs in disposable subagent contexts. ALL repository exploration
+      MUST go through the delegate tool — use foundation:explorer for surveys
+      and any multi-file reading, one delegate per topic, dispatched in
+      parallel when topics are independent. You must NOT read repository
+      files directly and must NOT use bash/grep/glob for exploration (no
+      cat/grep/find/head over repo files). Direct file access is permitted
+      ONLY for: files this step itself writes (the plan file,
+      pending-output.json, the ledger, logs), reading back your own
+      artifacts, and running git/build/test commands via bash.
+      EXPLORER REPORT PROTOCOL: instruct every delegated explorer to WRITE
+      its full report to {{workspace.logs_dir}}/reports/<topic>.md (create
+      the reports dir with mkdir -p once, first) and to RETURN only that
+      file path plus a summary of at most ~500 tokens. Work from the
+      summaries; read specific report sections only when needed (bounded
+      reads), never whole reports by reflex.
+
       Execute the plan. The complete methodology is inlined below: first the
       executing-plans process, then the subagent-driven development (SDD)
       methodology it requires, including the verbatim dispatch prompt templates
@@ -1377,7 +1469,11 @@ steps:
       Amplifier translation (applies throughout): "dispatch a subagent" = call
       the delegate tool with the filled-in prompt template as the instruction and
       context_depth="none" (fresh subagents never inherit your session context —
-      you construct exactly what they need). "Model selection" maps to the
+      you construct exactly what they need). Any exploration you need beyond the
+      SDD file handoffs (briefs, reports, review packages — which already keep
+      bulk content out of your context) follows the DELEGATION MANDATE above:
+      explorer subagents writing to {{workspace.logs_dir}}/reports/<topic>.md
+      and returning path + <=500-token summary. "Model selection" maps to the
       delegate tool's model_role parameter: cheap/fast tier -> model_role="fast";
       standard tier -> model_role="coding"; most capable tier ->
       model_role="reasoning". Always set model_role explicitly on every dispatch.
@@ -2113,7 +2209,7 @@ steps:
   # ===========================================================================
   - id: "fresheyes-delta"
     # The agent that executes this step's instructions (this stage's worker).
-    agent: "foundation:zen-architect"
+    agent: "the-usual:step-runner"
     timeout: 864000
     output: "fresheyes_delta_result"
     parse_json: true
@@ -2157,6 +2253,21 @@ steps:
           only its missing receipt failed it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, and make the completed JSON your final message.
+
+      DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
+      agent's context is the scarcest resource in the pipeline; exploration
+      belongs in disposable subagent contexts. If understanding or fixing
+      the reviewer's blocking issues requires repository exploration, it
+      MUST go through the delegate tool (foundation:explorer for surveys
+      and any multi-file reading; one delegate per topic; parallel when
+      independent) — do NOT read repository files directly and do NOT use
+      bash/grep/glob for exploration. Direct file access is permitted ONLY
+      for: files this step itself writes (the plan file, pending-output.json,
+      logs), reading back your own artifacts, and git/build/test commands
+      via bash. EXPLORER REPORT PROTOCOL: instruct every delegated explorer
+      to WRITE its full report to {{workspace.logs_dir}}/reports/<topic>.md
+      (mkdir -p the reports dir first) and RETURN only that file path plus a
+      summary of at most ~500 tokens; work from summaries with bounded reads.
 
       Run ONE fresheyes review iteration on the DELTA between the original fork
       point and current HEAD. The reviewer gets zero conversation context, a
@@ -2243,7 +2354,7 @@ steps:
   # ===========================================================================
   - id: "recap"
     # The agent that executes this step's instructions (this stage's worker).
-    agent: "foundation:zen-architect"
+    agent: "the-usual:step-runner"
     timeout: 864000
     output: "final_output"
     prompt: |
