@@ -254,7 +254,7 @@ steps:
   - id: "workspace-setup"
     # The agent that executes this step's instructions (this stage's worker).
     agent: "foundation:zen-architect"
-    timeout: 900
+    timeout: 864000
     output: "workspace"
     parse_json: true
     prompt: |
@@ -307,7 +307,7 @@ steps:
   - id: "write-plan"
     # The agent that executes this step's instructions (this stage's worker).
     agent: "foundation:zen-architect"
-    timeout: 2400
+    timeout: 864000
     output: "plan"
     parse_json: true
     prompt: |
@@ -562,7 +562,7 @@ steps:
   - id: "load-bearing"
     # The agent that executes this step's instructions (this stage's worker).
     agent: "foundation:zen-architect"
-    timeout: 5400
+    timeout: 864000
     output: "load_bearing_result"
     parse_json: true
     prompt: |
@@ -1049,7 +1049,7 @@ steps:
   - id: "fresheyes-plan"
     # The agent that executes this step's instructions (this stage's worker).
     agent: "foundation:zen-architect"
-    timeout: 3600
+    timeout: 864000
     output: "fresheyes_plan_result"
     parse_json: true
     while_condition: "{{plan_passed}} != 'true'"
@@ -1147,7 +1147,7 @@ steps:
     # The agent that executes this step's instructions (this stage's worker —
     # it acts as the SDD "controller", dispatching implementers and reviewers).
     agent: "foundation:zen-architect"
-    timeout: 14400
+    timeout: 864000
     output: "execute_result"
     parse_json: true
     prompt: |
@@ -1924,7 +1924,7 @@ steps:
   - id: "fresheyes-delta"
     # The agent that executes this step's instructions (this stage's worker).
     agent: "foundation:zen-architect"
-    timeout: 3600
+    timeout: 864000
     output: "fresheyes_delta_result"
     parse_json: true
     while_condition: "{{delta_passed}} != 'true'"
@@ -2019,7 +2019,7 @@ steps:
   - id: "recap"
     # The agent that executes this step's instructions (this stage's worker).
     agent: "foundation:zen-architect"
-    timeout: 1200
+    timeout: 864000
     output: "final_output"
     prompt: |
       Produce the final recap for the user. This is the end of "the usual": report
