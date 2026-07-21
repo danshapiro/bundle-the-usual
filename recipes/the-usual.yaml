@@ -34,6 +34,16 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.1.0 (2026-07-21):
+#   - NEW: output-contract armor + retry-recovery protocol for slow/small-
+#     context executors. Every JSON-output step now opens with a CRITICAL
+#     OUTPUT CONTRACT block containing a verbatim copy of its end-of-prompt
+#     JSON contract (authoritative under compaction), a progressive anchor
+#     file (pending-output.json, updated as values become known), and a
+#     recovery-on-retry check (verify a prior attempt's artifacts instead of
+#     redoing the work when only the final JSON receipt was missing). The
+#     recap step gets a light final-message reminder.
+#
 # v3.0.1 (2026-07-20):
 #   - BUGFIX: the fresheyes reviewer instructions now self-locate the git
 #     worktree under review.
@@ -112,7 +122,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.0.1"
+version: "3.1.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -258,6 +268,44 @@ steps:
     output: "workspace"
     parse_json: true
     prompt: |
+      CRITICAL OUTPUT CONTRACT — read first. Your FINAL message must contain
+      exactly the JSON block specified below — this is a verbatim copy of
+      the contract in the "Then return ONLY a JSON object" section at the
+      end of these instructions, and it is authoritative even if everything
+      below it has been compacted out of your context. Work is judged failed
+      without it, regardless of quality.
+
+      Then return ONLY a JSON object (no prose, no markdown fences) with exactly:
+      {
+        "worktree_path": "<absolute path to the worktree working tree>",
+        "branch": "<branch name checked out in the worktree>",
+        "base_ref": "<the recorded original-fork commit SHA>",
+        "slug": "<the feature slug>",
+        "logs_dir": "<absolute path to the logs directory you created>"
+      }
+
+      Because your context may be compacted during this long task:
+      (a) ANCHOR — as your FIRST action, write this JSON skeleton with
+          placeholder values to /tmp/the-usual-pending-output.json (this step
+          creates the logs dir, so anchor in /tmp) and add a todo item "FINAL
+          ACT: emit completed output JSON as my last message". Then UPDATE that
+          file throughout the step as real values become known (e.g. write
+          worktree_path and branch as soon as the worktree exists, base_ref as
+          soon as it is recorded), so at any moment it reflects your best-known
+          values.
+      (b) RECOVERY — immediately after the anchor setup, BEFORE starting
+          work, check whether /tmp/the-usual-pending-output.json already exists
+          with non-placeholder values, and inspect the workspace for a previous
+          attempt's artifacts: an existing worktree under
+          {{repo_path}}/.worktrees/ and an existing logs dir under
+          {{repo_path}}/.worktrees/.the-usual-logs/. If a previous attempt
+          substantially completed the work, VERIFY its artifacts rather than
+          redoing them, complete whatever is missing, and emit the contract
+          JSON. A prior attempt's work counts — only its missing receipt failed
+          it.
+      (c) FINISH — when your work is done, read that file back, fill in real
+          values, and make the completed JSON your final message.
+
       You are setting up an isolated workspace for a development workflow. Follow
       the user's workspace discipline exactly. Do NOT substitute your own conventions.
 
@@ -311,6 +359,38 @@ steps:
     output: "plan"
     parse_json: true
     prompt: |
+      CRITICAL OUTPUT CONTRACT — read first. Your FINAL message must contain
+      exactly the JSON block specified below — this is a verbatim copy of
+      the contract in the "Return ONLY a JSON object" section at the end of
+      these instructions, and it is authoritative even if everything below
+      it has been compacted out of your context. Work is judged failed
+      without it, regardless of quality.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "plan_path": "<absolute path to the committed plan file>",
+        "feature": "<one-line feature name>"
+      }
+
+      Because your context may be compacted during this long task:
+      (a) ANCHOR — as your FIRST action, write this JSON skeleton with
+          placeholder values to {{workspace.logs_dir}}/pending-output.json and
+          add a todo item "FINAL ACT: emit completed output JSON as my last
+          message". Then UPDATE that file throughout the step as real values
+          become known (e.g. write plan_path as soon as the plan path is
+          chosen), so at any moment it reflects your best-known values.
+      (b) RECOVERY — immediately after the anchor setup, BEFORE starting
+          work, check whether {{workspace.logs_dir}}/pending-output.json already
+          exists with non-placeholder values, and inspect the workspace for a
+          previous attempt's artifacts: a committed or uncommitted plan file
+          under docs/plans/ in the worktree (check the working tree AND git
+          log). If a previous attempt substantially completed the work, VERIFY
+          its artifacts rather than redoing them, complete whatever is missing,
+          and emit the contract JSON. A prior attempt's work counts — only its
+          missing receipt failed it.
+      (c) FINISH — when your work is done, read that file back, fill in real
+          values, and make the completed JSON your final message.
+
       Write the implementation plan for this task by following the methodology
       below EXACTLY. It is the user's writing-plans discipline, inlined in full.
 
@@ -566,6 +646,43 @@ steps:
     output: "load_bearing_result"
     parse_json: true
     prompt: |
+      CRITICAL OUTPUT CONTRACT — read first. Your FINAL message must contain
+      exactly the JSON block specified below — this is a verbatim copy of
+      the contract in the "Return ONLY a JSON object" section at the end of
+      these instructions, and it is authoritative even if everything below
+      it has been compacted out of your context. Work is judged failed
+      without it, regardless of quality.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "halt": "true|false",
+        "halt_reason": "<empty string unless halt is true; then the specific data-loss/corruption risk>",
+        "verified_count": 0,
+        "falsified_count": 0,
+        "acceptable_decisions": "<one paragraph summarizing each `acceptable` decision (claim, alternatives considered, why the chosen path won), or 'none'>",
+        "ledger_path": "{{workspace.logs_dir}}/load-bearing-ledger.md"
+      }
+
+      Because your context may be compacted during this long task:
+      (a) ANCHOR — as your FIRST action, write this JSON skeleton with
+          placeholder values to {{workspace.logs_dir}}/pending-output.json and
+          add a todo item "FINAL ACT: emit completed output JSON as my last
+          message". Then UPDATE that file throughout the step as real values
+          become known (e.g. write ledger_path as soon as the ledger file is
+          created; update verified_count/falsified_count as verdicts land), so
+          at any moment it reflects your best-known values.
+      (b) RECOVERY — immediately after the anchor setup, BEFORE starting
+          work, check whether {{workspace.logs_dir}}/pending-output.json already
+          exists with non-placeholder values, and inspect the workspace for a
+          previous attempt's artifacts: the assumption ledger at
+          {{workspace.logs_dir}}/load-bearing-ledger.md and committed plan
+          updates in git log. If a previous attempt substantially completed the
+          work, VERIFY its artifacts rather than redoing them, complete whatever
+          is missing, and emit the contract JSON. A prior attempt's work counts
+          — only its missing receipt failed it.
+      (c) FINISH — when your work is done, read that file back, fill in real
+          values, and make the completed JSON your final message.
+
       Surface and verify the load-bearing assumptions of the plan, then fix the
       plan accordingly. The complete methodology and the exact subagent prompt
       templates are inlined below — follow them faithfully.
@@ -1058,6 +1175,41 @@ steps:
     update_context:
       plan_passed: "{{fresheyes_plan_result.passed}}"
     prompt: |
+      CRITICAL OUTPUT CONTRACT — read first. Your FINAL message must contain
+      exactly the JSON block specified below — this is a verbatim copy of
+      the contract in the "Return ONLY a JSON object" section at the end of
+      these instructions, and it is authoritative even if everything below
+      it has been compacted out of your context. Work is judged failed
+      without it, regardless of quality.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "passed": "true|false",
+        "verdict": "PASSED|FAILED|NO_MARKER",
+        "blocking_count": 0,
+        "summary": "<one-line summary of this iteration's findings>"
+      }
+
+      Because your context may be compacted during this long task:
+      (a) ANCHOR — as your FIRST action, write this JSON skeleton with
+          placeholder values to {{workspace.logs_dir}}/pending-output.json and
+          add a todo item "FINAL ACT: emit completed output JSON as my last
+          message". Then UPDATE that file throughout the step as real values
+          become known (e.g. write verdict and passed as soon as the reviewer's
+          verdict marker is parsed), so at any moment it reflects your
+          best-known values.
+      (b) RECOVERY — immediately after the anchor setup, BEFORE starting
+          work, check whether {{workspace.logs_dir}}/pending-output.json already
+          exists with non-placeholder values, and inspect the workspace for a
+          previous attempt's artifacts: this iteration's entry in
+          {{workspace.logs_dir}}/fresheyes-plan.md and fix commits in the
+          worktree. If a previous attempt substantially completed the work,
+          VERIFY its artifacts rather than redoing them, complete whatever is
+          missing, and emit the contract JSON. A prior attempt's work counts —
+          only its missing receipt failed it.
+      (c) FINISH — when your work is done, read that file back, fill in real
+          values, and make the completed JSON your final message.
+
       Run ONE fresheyes review iteration on the PLAN. Fresheyes is a truly
       independent, cross-model review: the reviewer gets zero conversation
       context, a different model family than this session, and EXACTLY the
@@ -1151,6 +1303,44 @@ steps:
     output: "execute_result"
     parse_json: true
     prompt: |
+      CRITICAL OUTPUT CONTRACT — read first. Your FINAL message must contain
+      exactly the JSON block specified below — this is a verbatim copy of
+      the contract in the "Return ONLY a JSON object" section at the end of
+      these instructions, and it is authoritative even if everything below
+      it has been compacted out of your context. Work is judged failed
+      without it, regardless of quality.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly
+      (total_tasks = the total task count from the plan):
+      {
+        "blocked": "true|false",
+        "blocked_reason": "<empty unless blocked; then the specific blocker>",
+        "tasks_completed": 0,
+        "total_tasks": 0,
+        "final_review_verdict": "<the final whole-branch reviewer's verdict, or 'n/a' if blocked>",
+        "execution_notes": "<2-4 sentence factual summary of what was built and any concerns>"
+      }
+
+      Because your context may be compacted during this long task:
+      (a) ANCHOR — as your FIRST action, write this JSON skeleton with
+          placeholder values to {{workspace.logs_dir}}/pending-output.json and
+          add a todo item "FINAL ACT: emit completed output JSON as my last
+          message". Then UPDATE that file throughout the step as real values
+          become known (e.g. write total_tasks after reading the plan; update
+          tasks_completed after each task completes), so at any moment it
+          reflects your best-known values.
+      (b) RECOVERY — immediately after the anchor setup, BEFORE starting
+          work, check whether {{workspace.logs_dir}}/pending-output.json already
+          exists with non-placeholder values, and inspect the workspace for a
+          previous attempt's artifacts: the progress ledger at "$(git rev-parse
+          --git-path sdd)/progress.md" inside the worktree, and task commits in
+          git log. If a previous attempt substantially completed the work,
+          VERIFY its artifacts rather than redoing them, complete whatever is
+          missing, and emit the contract JSON. A prior attempt's work counts —
+          only its missing receipt failed it.
+      (c) FINISH — when your work is done, read that file back, fill in real
+          values, and make the completed JSON your final message.
+
       Execute the plan. The complete methodology is inlined below: first the
       executing-plans process, then the subagent-driven development (SDD)
       methodology it requires, including the verbatim dispatch prompt templates
@@ -1933,6 +2123,41 @@ steps:
     update_context:
       delta_passed: "{{fresheyes_delta_result.passed}}"
     prompt: |
+      CRITICAL OUTPUT CONTRACT — read first. Your FINAL message must contain
+      exactly the JSON block specified below — this is a verbatim copy of
+      the contract in the "Return ONLY a JSON object" section at the end of
+      these instructions, and it is authoritative even if everything below
+      it has been compacted out of your context. Work is judged failed
+      without it, regardless of quality.
+
+      Return ONLY a JSON object (no prose, no fences) with exactly:
+      {
+        "passed": "true|false",
+        "verdict": "PASSED|FAILED|NO_MARKER",
+        "blocking_count": 0,
+        "summary": "<one-line summary of this iteration's findings>"
+      }
+
+      Because your context may be compacted during this long task:
+      (a) ANCHOR — as your FIRST action, write this JSON skeleton with
+          placeholder values to {{workspace.logs_dir}}/pending-output.json and
+          add a todo item "FINAL ACT: emit completed output JSON as my last
+          message". Then UPDATE that file throughout the step as real values
+          become known (e.g. write verdict and passed as soon as the reviewer's
+          verdict marker is parsed), so at any moment it reflects your
+          best-known values.
+      (b) RECOVERY — immediately after the anchor setup, BEFORE starting
+          work, check whether {{workspace.logs_dir}}/pending-output.json already
+          exists with non-placeholder values, and inspect the workspace for a
+          previous attempt's artifacts: this iteration's entry in
+          {{workspace.logs_dir}}/fresheyes-delta.md and fix commits in the
+          worktree. If a previous attempt substantially completed the work,
+          VERIFY its artifacts rather than redoing them, complete whatever is
+          missing, and emit the contract JSON. A prior attempt's work counts —
+          only its missing receipt failed it.
+      (c) FINISH — when your work is done, read that file back, fill in real
+          values, and make the completed JSON your final message.
+
       Run ONE fresheyes review iteration on the DELTA between the original fork
       point and current HEAD. The reviewer gets zero conversation context, a
       different model family than this session, and EXACTLY the instruction text
@@ -2022,6 +2247,9 @@ steps:
     timeout: 864000
     output: "final_output"
     prompt: |
+      REMINDER — read first: your FINAL message must be the recap prose
+      itself; end with it even if your context was compacted along the way.
+
       Produce the final recap for the user. This is the end of "the usual": report
       what was found at each stage, then a low-jargon summary of everything that
       was built, plus suggested next steps.
