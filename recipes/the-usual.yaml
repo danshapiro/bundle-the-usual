@@ -34,6 +34,28 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.2.1 (2026-07-30):
+#   - HARDENING (incident-driven): a step-runner told to "request a code
+#     review" loaded the similarly-named `code-review` skill instead of
+#     `requesting-code-review`. `code-review` is a destructive context-forked
+#     review-AND-EDIT skill; invoked with empty arguments it inherited the
+#     recipe controller's cwd (the MAIN checkout, not the worktree), diffed
+#     the dirty main tree, and applied 21 unwanted "fixes" there (three
+#     separate forks).
+#   - NEW: explicit prohibition beside Step 4's final-review instruction:
+#     load exactly `requesting-code-review` (template-only); never load
+#     `code-review`.
+#   - NEW: skill-load whitelist in every step's cross-cutting rules: this
+#     workflow may load ONLY using-git-worktrees (Step 0) and
+#     requesting-code-review (Step 4's final review template).
+#   - NEW: the v3.0.1 fix promoted to POLICY in the same cross-cutting
+#     blocks: any dispatched subagent, reviewer, or skill runs with an
+#     UNKNOWN working directory; every dispatch prompt that touches the repo
+#     must state the repo root explicitly and require `git -C` /
+#     path-prefixed access. Never rely on cwd.
+#   - NEW: step-runner agent rule 6: load only skills the step prompt names
+#     explicitly, exact-name match; never substitute a near-match.
+#
 # v3.2.0 (2026-07-21):
 #   - NEW: DELEGATION MANDATE in the heavy steps (write-plan, load-bearing,
 #     execute-plan) and both fresheyes fix sections — all repo exploration via
@@ -138,7 +160,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.2.0"
+version: "3.2.1"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -352,6 +374,17 @@ steps:
       - Preserve unrelated changes from other agents in the same repo — never
         clobber work you did not author.
       - Do NOT start implementation on main/master.
+      - Skill loads are whitelisted: this workflow may load ONLY
+        using-git-worktrees (Step 0) and requesting-code-review (Step 4's
+        final review template). Never load any other skill; in particular
+        never load `code-review`. Reviews in this workflow are performed by
+        delegated reviewer subagents whose prompts this recipe supplies
+        verbatim.
+      - Any subagent or skill you dispatch runs with an UNKNOWN working
+        directory. Every dispatch prompt that touches the repo MUST state the
+        repo root explicitly (here: {{repo_path}}, or the worktree you create
+        in this step) and require `git -C` / path-prefixed access. Never rely
+        on cwd.
 
       Progress banners: do NOT print a progress banner for this step —
       workspace setup is quick and unannounced (banners begin at Stage 1).
@@ -660,6 +693,16 @@ steps:
       - Cross-cutting rules (complete as stated): README.md is the only end-user
         markdown doc unless the user asked for others — the plan under docs/plans/
         is a working/agent doc and is fine. Keep commits focused and atomic.
+      - Skill loads are whitelisted: this workflow may load ONLY
+        using-git-worktrees (Step 0) and requesting-code-review (Step 4's
+        final review template). Never load any other skill; in particular
+        never load `code-review`. Reviews in this workflow are performed by
+        delegated reviewer subagents whose prompts this recipe supplies
+        verbatim.
+      - Any subagent, reviewer, or skill you dispatch runs with an UNKNOWN
+        working directory. Every dispatch prompt that touches the repo MUST
+        state the repo root explicitly ({{workspace.worktree_path}}) and
+        require `git -C` / path-prefixed access. Never rely on cwd.
       - COMMIT the plan to the worktree branch (the fresheyes review stage only
         reviews committed work). Use a focused commit message, e.g.
         "docs: add implementation plan for <slug>".
@@ -1194,6 +1237,18 @@ steps:
             candidate path whose failure mode is data loss/corruption that
             cannot be planned around is a halt, never `acceptable`.
 
+      Cross-cutting rules (complete as stated):
+      - Skill loads are whitelisted: this workflow may load ONLY
+        using-git-worktrees (Step 0) and requesting-code-review (Step 4's
+        final review template). Never load any other skill; in particular
+        never load `code-review`. Reviews in this workflow are performed by
+        delegated reviewer subagents whose prompts this recipe supplies
+        verbatim.
+      - Any subagent, reviewer, or skill you dispatch runs with an UNKNOWN
+        working directory. Every dispatch prompt that touches the repo MUST
+        state the repo root explicitly ({{workspace.worktree_path}}) and
+        require `git -C` / path-prefixed access. Never rely on cwd.
+
       Return ONLY a JSON object (no prose, no fences) with exactly:
       {
         "halt": "true|false",
@@ -1356,6 +1411,18 @@ steps:
           fixes (focused, atomic). Preserve unrelated changes by other agents.
           The loop will re-review.
           IF PASSED: make no further changes.
+
+      Cross-cutting rules (complete as stated):
+      - Skill loads are whitelisted: this workflow may load ONLY
+        using-git-worktrees (Step 0) and requesting-code-review (Step 4's
+        final review template). Never load any other skill; in particular
+        never load `code-review`. Reviews in this workflow are performed by
+        delegated reviewer subagents whose prompts this recipe supplies
+        verbatim.
+      - Any subagent, reviewer, or skill you dispatch runs with an UNKNOWN
+        working directory. Every dispatch prompt that touches the repo MUST
+        state the repo root explicitly ({{workspace.worktree_path}}) and
+        require `git -C` / path-prefixed access. Never rely on cwd.
 
       Return ONLY a JSON object (no prose, no fences) with exactly:
       {
@@ -2126,8 +2193,13 @@ steps:
       After all tasks complete: run the review-package bash with
       BASE={{workspace.base_ref}} and HEAD_REF=HEAD, then dispatch the final
       reviewer with model_role="reasoning". For its template, load
-      load_skill("requesting-code-review") and use its code-reviewer template;
-      include the review-package path and the progress ledger's Minor
+      load_skill("requesting-code-review") and use its code-reviewer template.
+      Load exactly that name. Do NOT load the `code-review` skill — despite the
+      similar name it is a different, destructive skill: a context-forked
+      review-AND-EDIT pass that diffs whatever checkout it wakes up in and
+      applies fixes there. It has previously corrupted the main checkout when
+      loaded from this workflow. `requesting-code-review` is template-only.
+      Include the review-package path and the progress ledger's Minor
       findings list so the reviewer can triage which must be fixed before merge.
       If it returns findings, dispatch ONE fix subagent with the complete
       findings list — then re-review.
@@ -2173,6 +2245,16 @@ steps:
       - Preserve unrelated changes from other agents in the same repo.
       - Commits stay focused and atomic.
       - README.md is the only end-user markdown doc unless the user requested others.
+      - Skill loads are whitelisted: this workflow may load ONLY
+        using-git-worktrees (Step 0) and requesting-code-review (Step 4's
+        final review template). Never load any other skill; in particular
+        never load `code-review`. Reviews in this workflow are performed by
+        delegated reviewer subagents whose prompts this recipe supplies
+        verbatim.
+      - Any subagent, reviewer, or skill you dispatch runs with an UNKNOWN
+        working directory. Every dispatch prompt that touches the repo MUST
+        state the repo root explicitly ({{workspace.worktree_path}}) and
+        require `git -C` / path-prefixed access. Never rely on cwd.
 
       HALT rule: per "When to Stop and Ask for Help" — on a real blocker
       (missing dependency, repeatedly failing verification, unclear instruction,
@@ -2340,6 +2422,18 @@ steps:
           update tests as the review requires. Preserve unrelated changes by
           other agents. COMMIT the fixes (focused, atomic). The loop re-reviews.
           IF PASSED: make no further changes.
+
+      Cross-cutting rules (complete as stated):
+      - Skill loads are whitelisted: this workflow may load ONLY
+        using-git-worktrees (Step 0) and requesting-code-review (Step 4's
+        final review template). Never load any other skill; in particular
+        never load `code-review`. Reviews in this workflow are performed by
+        delegated reviewer subagents whose prompts this recipe supplies
+        verbatim.
+      - Any subagent, reviewer, or skill you dispatch runs with an UNKNOWN
+        working directory. Every dispatch prompt that touches the repo MUST
+        state the repo root explicitly ({{workspace.worktree_path}}) and
+        require `git -C` / path-prefixed access. Never rely on cwd.
 
       Return ONLY a JSON object (no prose, no fences) with exactly:
       {

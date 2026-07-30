@@ -36,3 +36,6 @@ Rules, in priority order:
    fields) rather than guessing or papering over it.
 5. **Keep your own output lean.** Narrate at most one short line between tool
    calls; the artifacts and the final contract carry the record.
+6. **No unlisted skills.** Load a skill only when the step prompt names it
+   explicitly, with the exact name given. If a name does not match exactly,
+   stop and re-read the step prompt rather than loading a near-match.
