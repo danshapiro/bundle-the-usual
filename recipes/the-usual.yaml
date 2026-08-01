@@ -758,7 +758,10 @@ steps:
           is missing, and emit the contract JSON. A prior attempt's work counts
           — only its missing receipt failed it.
       (c) FINISH — when your work is done, read that file back, fill in real
-          values, and make the completed JSON your final message.
+          values, WRITE the completed JSON to
+          {{workspace.logs_dir}}/load-bearing-result.json (the recipe reads
+          this file authoritatively even if your final message is lost), and
+          ALSO make the completed JSON your final message.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -1259,6 +1262,27 @@ steps:
         "ledger_path": "{{workspace.logs_dir}}/load-bearing-ledger.md"
       }
 
+  # ---- Collect: file-based pickup of the load-bearing output contract.
+  # The chat-captured output can be lost (context compaction, or a run whose
+  # final message ended on a tool call), which previously crashed the halt
+  # guard with "Undefined variable: load_bearing_result.halt". The step writes
+  # its completed JSON to a file; this step re-reads it authoritatively and
+  # falls back to the pending-output anchor, then to safe defaults.
+  - id: "load-bearing-collect"
+    type: "bash"
+    output: "load_bearing_result"
+    parse_json: true
+    command: |
+      if [ -s "{{workspace.logs_dir}}/load-bearing-result.json" ]; then
+        cat "{{workspace.logs_dir}}/load-bearing-result.json"
+      elif [ -s "{{workspace.logs_dir}}/pending-output.json" ] && grep -q '"halt"' "{{workspace.logs_dir}}/pending-output.json"; then
+        echo "WARNING: load-bearing-result.json missing; using pending-output.json anchor" >&2
+        cat "{{workspace.logs_dir}}/pending-output.json"
+      else
+        echo "WARNING: load-bearing output lost; substituting safe defaults (halt=false)" >&2
+        echo '{"halt":"false","halt_reason":"","verified_count":-1,"falsified_count":-1,"acceptable_decisions":"UNKNOWN - the load-bearing chat output was lost; consult the ledger file if it exists","ledger_path":"{{workspace.logs_dir}}/load-bearing-ledger.md"}'
+      fi
+
   # ---- Halt guard: fail loudly if load-bearing found unplannable data-loss risk
   - id: "load-bearing-halt-guard"
     type: "bash"
@@ -1480,7 +1504,10 @@ steps:
           missing, and emit the contract JSON. A prior attempt's work counts —
           only its missing receipt failed it.
       (c) FINISH — when your work is done, read that file back, fill in real
-          values, and make the completed JSON your final message.
+          values, WRITE the completed JSON to
+          {{workspace.logs_dir}}/execute-result.json (the recipe reads this
+          file authoritatively even if your final message is lost), and ALSO
+          make the completed JSON your final message.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -2272,6 +2299,24 @@ steps:
         "final_review_verdict": "<the final whole-branch reviewer's verdict, or 'n/a' if blocked>",
         "execution_notes": "<2-4 sentence factual summary of what was built and any concerns>"
       }
+
+  # ---- Collect: file-based pickup of the execute output contract (same
+  # rationale as load-bearing-collect; the execute step is the longest-running
+  # and most compaction-prone step in the pipeline).
+  - id: "execute-collect"
+    type: "bash"
+    output: "execute_result"
+    parse_json: true
+    command: |
+      if [ -s "{{workspace.logs_dir}}/execute-result.json" ]; then
+        cat "{{workspace.logs_dir}}/execute-result.json"
+      elif [ -s "{{workspace.logs_dir}}/pending-output.json" ] && grep -q '"blocked"' "{{workspace.logs_dir}}/pending-output.json"; then
+        echo "WARNING: execute-result.json missing; using pending-output.json anchor" >&2
+        cat "{{workspace.logs_dir}}/pending-output.json"
+      else
+        echo "WARNING: execute output lost; substituting safe defaults (blocked=false)" >&2
+        echo '{"blocked":"false","blocked_reason":"","tasks_completed":-1,"total_tasks":-1,"final_review_verdict":"UNKNOWN - execute chat output was lost; check the worktree branch and progress ledger","execution_notes":"UNKNOWN - execute chat output was lost; the work may still be complete on the branch"}'
+      fi
 
   # ---- Blocker guard: fail loudly if execution hit a stop-and-ask blocker
   - id: "execute-halt-guard"
