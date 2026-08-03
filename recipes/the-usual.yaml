@@ -34,6 +34,22 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.6.0 (2026-08-03):
+#   - CHANGED: the PERIODIC full-suite gate trigger no longer uses the clock
+#     (owner-directed, evidence-based, twice council-reviewed). Wall-clock
+#     hours counted idle pauses (8-31h gaps observed across nine real runs,
+#     causing spurious gates at resume) and test-campaign time. The trigger
+#     is now a deterministic commit count: at each task boundary, run
+#     git -C <worktree-root> rev-list --count --no-merges
+#     <LAST_GATE_HEAD>..HEAD -- ':(exclude,top)docs/plans'
+#     and gate when the count reaches full_suite_commits (new context var,
+#     default "10"; replaces full_suite_hours). Calibrated on nine real runs
+#     across four repos; idle time and test campaigns land no commits, so
+#     neither can trigger the gate. Fail-closed: if the command errors or
+#     LAST_GATE_HEAD cannot be resolved, run the gate. Gate entries now also
+#     record the computed count (or the trigger reason). Mirrored from
+#     skill-the-usual d447273.
+#
 # v3.5.0 (2026-08-03):
 #   - NEW: PERIODIC full-suite gate trigger for long runs (owner-directed,
 #     council-reviewed). The Step 4 gate is no longer end-of-execution-only:
@@ -238,7 +254,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.5.0"
+version: "3.6.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -252,7 +268,7 @@ context:
   reviewer_model: "gpt-*"       # glob; latest GPT is auto-selected
 
   # ---- Full-suite gate interval (periodic trigger during execution) -----------
-  full_suite_hours: "6"         # run the full-suite gate at the next task boundary after this many hours
+  full_suite_commits: "10"      # run the full-suite gate at the next task boundary once this many commits (excluding docs/plans/) have landed since the last gate
 
   # ---- Loop-state flags (managed via update_context; do not set at runtime) ---
   plan_passed: "false"          # set true when the plan clears fresheyes
@@ -1740,12 +1756,20 @@ steps:
             findings: dispatch a fix subagent, then RE-REVIEW (fresh review
             package). Repeat until approved. Don't skip the re-review.
          g. Mark task complete in the todo list and the progress ledger.
-         h. Check the clock: if more than {{full_suite_hours}} hours have
-            passed since the progress ledger's last full-suite gate entry (or
-            its first entry, when no gate has run yet) and new commits have
-            landed since, run the full-suite gate (see "Full-suite gate"
-            below) now, before dispatching the next task. Never interrupt a
-            task mid-flight for this.
+         h. Count the commits landed since the last full-suite gate:
+            `git -C <worktree-root> rev-list --count --no-merges
+            <LAST_GATE_HEAD>..HEAD -- ':(exclude,top)docs/plans'`, where
+            LAST_GATE_HEAD is the HEAD recorded in the progress ledger's
+            last gate entry (or its first entry, when no gate has run yet).
+            Use this exact command even when the plan lives somewhere other
+            than docs/plans/. If the count is {{full_suite_commits}} or
+            more, run the full-suite gate (see "Full-suite gate" below) now,
+            before dispatching the next task. For this periodic trigger the
+            count is the decision -- do not second-guess it in either
+            direction. If the command errors or LAST_GATE_HEAD cannot be
+            resolved, run the gate now -- a broken counter is a reason to
+            gate, never a reason to skip. Never interrupt a task mid-flight
+            for this.
       3. After all tasks: run the full-suite gate (see "Full-suite gate"
          below), then dispatch the final whole-branch code reviewer (see
          "Final whole-branch review" below).
@@ -1935,7 +1959,8 @@ steps:
         them; resume at the first task not marked complete.
       - When creating the ledger (no prior entries), record the current time
         and HEAD as its first entry -- the reference point for the full-suite
-        gate's periodic trigger. Every gate entry records time, HEAD, and
+        gate's periodic trigger. Every gate entry records time, HEAD, the
+        computed commit count that triggered it (or the trigger reason), and
         result.
       - When a task's review comes back clean, append one line to the ledger in
         the same message as your other bookkeeping:
@@ -2334,14 +2359,20 @@ steps:
          green excluding ledger-recorded pre-existing failures. The gate
          passes at that point, and only at that point.
       5. Record the gate entry in the progress ledger: time, HEAD, the exact
-         command, and the result.
+         command, the computed commit count that triggered it (or the
+         trigger reason), and the result.
 
       When the gate runs:
 
       - PERIODICALLY, on long runs: at each task boundary (process step h
-        above), when more than {{full_suite_hours}} hours have passed since
-        the ledger's last gate entry (or its first entry, when no gate has
-        run yet) and new commits have landed since.
+        above), when the commit count since the last gate entry's HEAD
+        reaches {{full_suite_commits}}, counted with `git -C <worktree-root>
+        rev-list --count --no-merges <LAST_GATE_HEAD>..HEAD --
+        ':(exclude,top)docs/plans'`. docs/plans/ is excluded as planning
+        rather than implementation; all other changes count, and idle time
+        or test campaigns land no commits, so neither can trigger the gate.
+        The count is the decision, and it never waives the end-of-execution
+        gate below. If the command errors, run the gate (fail closed).
       - AT THE END OF EXECUTION: after all tasks are complete and BEFORE the
         final whole-branch review. A periodic run satisfies this only if it
         PASSED the gate at the exact final HEAD; otherwise run the gate
