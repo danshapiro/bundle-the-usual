@@ -34,6 +34,84 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.5.0 (2026-08-03):
+#   - NEW: PERIODIC full-suite gate trigger for long runs (owner-directed,
+#     council-reviewed). The Step 4 gate is no longer end-of-execution-only:
+#     at each task boundary (new process step h -- after a task's review
+#     passes, before the next brief is dispatched) the controller checks the
+#     clock; if more than full_suite_hours (new context var, default "6")
+#     have passed since the ledger's last gate entry and new commits have
+#     landed since, it runs the gate then. Never mid-task. The ledger's first
+#     entry (time + HEAD, recorded at creation) is the initial reference
+#     point; every gate entry records time, HEAD, and result.
+#   - CHANGED (council-reviewed hardening of the v3.4.0 gate):
+#     * "pre-existing failure" is no longer self-certified: a failure counts
+#       as LEDGER-RECORDED PRE-EXISTING only if it reproduces at the original
+#       fork commit, receipt in the ledger. The gate's pass criterion is
+#       green EXCLUDING ledger-recorded pre-existing failures -- this makes
+#       the rerun-until-green loop terminate in repos with standing red tests.
+#     * the end-of-execution gate is satisfied by a periodic run ONLY if that
+#       run PASSED at the exact final HEAD (a red periodic run at the final
+#       HEAD can no longer satisfy the gate by the letter of the text).
+#     * Step 5's final-HEAD check uses the same pass criterion.
+#   - NEW: the recap lists each gate run (time, HEAD, what it caught) and any
+#     ledger-recorded pre-existing failures left unfixed.
+#
+# v3.4.0 (2026-08-03):
+#   - CHANGED: per-task test cadence is now impacted-test scoped. The
+#     implementer template's "run the full suite once before committing" was
+#     replaced with "evaluate every test the change could impact and run that
+#     set"; a per-task full-suite run is reserved for changes whose impact
+#     genuinely spans the codebase.
+#   - NEW: end-of-execution FULL-SUITE GATE in Step 4 (after all tasks,
+#     before the final whole-branch review): run the full suite once, record
+#     every failure in the progress ledger as a bug, dispatch ONE batched fix
+#     subagent, rerun to green; the green evidence is included in the final
+#     review dispatch.
+#   - NEW: final-HEAD full-suite guarantee in Step 5: on a PASSED delta
+#     review that follows fix commits made during the loop, run the full
+#     suite once on the current HEAD. Failures are fixed, committed, and
+#     reported as passed=false (verdict stays PASSED) so the loop re-reviews;
+#     the branch cannot finish without green full-suite evidence on its
+#     final state.
+#
+# v3.3.0 (2026-08-01):
+#   - NEW (diagnostic config, evidence-backed on Amplifier 2026.08.01): the
+#     step-runner agent now carries session.context.config
+#     .output_reserve_fraction: 1.0 in its own frontmatter. This is a full
+#     response-ceiling reserve -- it reserves the ENTIRE provider-reported
+#     max_output_tokens (not just a fraction of it) when the context module
+#     sizes its compaction budget, so an overlong response cannot overrun the
+#     request window mid-turn and waste the whole round. User priority: a
+#     wasted round from response overrun costs more than a smaller budget.
+#     * Baseline measured (RunPod provider, current install): first-turn
+#       step-runner input 16,412 tokens, no compaction across 5 turns.
+#       Provider metadata: context_window=128000, max_output_tokens=16384.
+#     * Effective budget arithmetic (context-simple's
+#       _calculate_budget: raw = context_window - int(max_output_tokens *
+#       output_reserve_fraction) - 4096 safety - 800 notice reserve):
+#       at the module default (output_reserve_fraction=0.5) the derived
+#       effective budget is 114,912; at 1.0 (this change) it is 106,720.
+#       The ~8,192-token difference is traded for guaranteeing the full
+#       output ceiling is always reserved.
+#   - NEW: step-runner re-declares tool-skills in its own tools list with
+#     config.visibility.enabled: false, disabling the automatic per-turn
+#     skill-catalog listing injected into every tool result (module tool
+#     lists deep-merge by module id onto the parent's mount, so this
+#     reconfigures the already-mounted module rather than adding a second
+#     instance). load_skill(name) itself remains fully available -- only the
+#     every-turn full-catalog enumeration is suppressed. Rule 6 in this
+#     agent's own instructions (exact-name skill loads only) is unaffected.
+#   - DISCOVERABILITY: the thin behavior registers `the-usual:step-runner`
+#     for users who compose the behavior directly. The root bundle also
+#     exposes the same namespaced agent; both registrations are safe.
+#   - NOT DONE (deliberately deferred): tool-delegate.settings.exclude_hooks
+#     is NOT added in this release. Its matching semantics against the
+#     reminder hooks that fire in delegated sub-sessions are not yet
+#     verified; adding it now would contaminate the clean A/B comparison
+#     this release is meant to support. Revisit once a before/after test
+#     session confirms the two changes above land as expected.
+#
 # v3.2.1 (2026-07-30):
 #   - HARDENING (incident-driven): a step-runner told to "request a code
 #     review" loaded the similarly-named `code-review` skill instead of
@@ -160,7 +238,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.2.1"
+version: "3.5.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -172,6 +250,9 @@ context:
   # ---- Optional inputs (cross-model reviewer; must differ from executor) ------
   reviewer_provider: "openai"   # executor is Anthropic -> reviewer defaults to a different family (GPT)
   reviewer_model: "gpt-*"       # glob; latest GPT is auto-selected
+
+  # ---- Full-suite gate interval (periodic trigger during execution) -----------
+  full_suite_hours: "6"         # run the full-suite gate at the next task boundary after this many hours
 
   # ---- Loop-state flags (managed via update_context; do not set at runtime) ---
   plan_passed: "false"          # set true when the plan clears fresheyes
@@ -1659,7 +1740,14 @@ steps:
             findings: dispatch a fix subagent, then RE-REVIEW (fresh review
             package). Repeat until approved. Don't skip the re-review.
          g. Mark task complete in the todo list and the progress ledger.
-      3. After all tasks: dispatch the final whole-branch code reviewer (see
+         h. Check the clock: if more than {{full_suite_hours}} hours have
+            passed since the progress ledger's last full-suite gate entry (or
+            its first entry, when no gate has run yet) and new commits have
+            landed since, run the full-suite gate (see "Full-suite gate"
+            below) now, before dispatching the next task. Never interrupt a
+            task mid-flight for this.
+      3. After all tasks: run the full-suite gate (see "Full-suite gate"
+         below), then dispatch the final whole-branch code reviewer (see
          "Final whole-branch review" below).
 
       ## Pre-Flight Plan Review
@@ -1845,6 +1933,10 @@ steps:
         `cat "$(git rev-parse --git-path sdd)/progress.md"` (run inside the
         worktree). Tasks listed there as complete are DONE — do not re-dispatch
         them; resume at the first task not marked complete.
+      - When creating the ledger (no prior entries), record the current time
+        and HEAD as its first entry -- the reference point for the full-suite
+        gate's periodic trigger. Every gate entry records time, HEAD, and
+        result.
       - When a task's review comes back clean, append one line to the ledger in
         the same message as your other bookkeeping:
         `Task N: complete (commits <base7>..<head7>, review clean)`.
@@ -1944,8 +2036,14 @@ steps:
       **While you work:** If you encounter something unexpected or unclear, **ask questions**.
       It's always OK to pause and clarify. Don't guess or make assumptions.
 
-      While iterating, run the focused test for what you're changing; run the
-      full suite once before committing, not after every edit.
+      While iterating, run the focused test for what you're changing. Before
+      committing, evaluate which existing tests your changes could impact --
+      callers of modified code, shared modules, changed interfaces or
+      fixtures -- and run that impacted set. Run the full suite here only when
+      the change's impact genuinely spans the whole codebase (a core
+      interface, shared configuration, or build change); otherwise the
+      controller runs the full-suite gate at intervals and at the end of
+      execution.
 
       ## Code Organization
 
@@ -2215,6 +2313,40 @@ steps:
       A fix dispatch can address spec gaps and quality findings together;
       re-review after fixes covers both verdicts.
 
+      ## Full-suite gate
+
+      The gate procedure (run inside the worktree):
+
+      1. Run the repository's full test suite.
+      2. Record every failure in the progress ledger as a bug: the failing
+         test, the command, and the observed output. A failure counts as a
+         LEDGER-RECORDED PRE-EXISTING FAILURE only if it also reproduces at
+         the original fork commit {{workspace.base_ref}} -- the code this
+         branch started from, without this branch's changes -- with that
+         reproduction receipt recorded in the ledger.
+      3. If there are failures that are not ledger-recorded pre-existing
+         failures, dispatch ONE fix subagent with the complete failure list
+         (same batching rule as final-review fixes; the fixer verifies each
+         fix with its covering tests and commits). Do not fix ledger-recorded
+         pre-existing failures unless they block the feature's verification;
+         leave them recorded for the recap instead.
+      4. Rerun the full suite. Repeat record-fix-rerun until the suite is
+         green excluding ledger-recorded pre-existing failures. The gate
+         passes at that point, and only at that point.
+      5. Record the gate entry in the progress ledger: time, HEAD, the exact
+         command, and the result.
+
+      When the gate runs:
+
+      - PERIODICALLY, on long runs: at each task boundary (process step h
+        above), when more than {{full_suite_hours}} hours have passed since
+        the ledger's last gate entry (or its first entry, when no gate has
+        run yet) and new commits have landed since.
+      - AT THE END OF EXECUTION: after all tasks are complete and BEFORE the
+        final whole-branch review. A periodic run satisfies this only if it
+        PASSED the gate at the exact final HEAD; otherwise run the gate
+        again.
+
       ## Final whole-branch review
 
       After all tasks complete: run the review-package bash with
@@ -2226,8 +2358,9 @@ steps:
       review-AND-EDIT pass that diffs whatever checkout it wakes up in and
       applies fixes there. It has previously corrupted the main checkout when
       loaded from this workflow. `requesting-code-review` is template-only.
-      Include the review-package path and the progress ledger's Minor
-      findings list so the reviewer can triage which must be fixed before merge.
+      Include the review-package path, the full-suite gate's passing entry
+      from the progress ledger, and the progress ledger's Minor findings list
+      so the reviewer can triage which must be fixed before merge.
       If it returns findings, dispatch ONE fix subagent with the complete
       findings list — then re-review.
 
@@ -2464,9 +2597,25 @@ steps:
 
       (e) IF NOT PASSED: fix ONLY the blocking issues the reviewer raised, in the
           worktree code. Do not reduce test coverage or skip tests to pass; add/
-          update tests as the review requires. Preserve unrelated changes by
-          other agents. COMMIT the fixes (focused, atomic). The loop re-reviews.
-          IF PASSED: make no further changes.
+          update tests as the review requires. Verify each fix with its focused
+          tests plus any tests the fix could impact -- not the full suite.
+          Preserve unrelated changes by other agents. COMMIT the fixes
+          (focused, atomic). The loop re-reviews.
+          IF PASSED: make no review-driven changes. Then, if any fix commits
+          landed during this delta-review loop (any iteration, per the
+          fresheyes-delta.md log) since the last passing full-suite gate
+          entry, run the full test suite once in the worktree on the current
+          HEAD; it passes when green excluding the progress ledger's recorded
+          pre-existing failures:
+          - If it passes (or no loop fix commits exist): append the evidence
+            to {{workspace.logs_dir}}/fresheyes-delta.md and report
+            passed=true per rule (c).
+          - If it fails: record every new failure, fix them all, verify each
+            fix with its covering tests, COMMIT, append the outcome to
+            fresheyes-delta.md, and -- overriding rule (c) for this one case --
+            report passed=false (keep verdict as the reviewer's PASSED) with a
+            summary noting full-suite failures were fixed and the new commits
+            need re-review. The loop re-reviews them.
 
       Cross-cutting rules (complete as stated):
       - Skill loads are whitelisted: this workflow may load ONLY
@@ -2543,6 +2692,10 @@ steps:
         "N of M tasks completed" (N = tasks_completed, M = total_tasks). If
         N < M, visually flag the partial completion on its own line (e.g.
         "!! PARTIAL: only N of M tasks completed") — do not bury it.
+        Also list each full-suite gate run -- when it ran, at what HEAD, and
+        what it caught -- one line each, plus any ledger-recorded pre-existing
+        failures left unfixed. Read the entries from the progress ledger:
+        `(cd {{workspace.worktree_path}} && cat "$(git rev-parse --git-path sdd)/progress.md")`.
       - Delta review (fresheyes): how many rounds, final verdict, notable
         blockers fixed.
 
