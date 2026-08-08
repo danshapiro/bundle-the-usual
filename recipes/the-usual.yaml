@@ -34,6 +34,20 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.7.0 (2026-08-08):
+#   - RELEASE HYGIENE (no recipe logic changes): lands the bundle-side files
+#     of the v3.3.0 context-discipline config, which the v3.3.0 changelog
+#     entry below already documents but which were left uncommitted in the
+#     working tree when that release session was interrupted:
+#     * agents/step-runner.md: session.context.config
+#       .output_reserve_fraction: 1.0 and the tool-skills re-declaration
+#       with config.visibility.enabled: false.
+#     * behaviors/the-usual.yaml: registers the-usual:step-runner in
+#       agents.include for users who compose the behavior directly.
+#   - CHANGED: bundle.md and behaviors/the-usual.yaml version fields sync to
+#     3.7.0 (they had lagged at 3.0.0 through v3.1.0-v3.6.0; this recipe's
+#     version field and changelog remain the release ledger).
+#
 # v3.6.0 (2026-08-03):
 #   - CHANGED: the PERIODIC full-suite gate trigger no longer uses the clock
 #     (owner-directed, evidence-based, twice council-reviewed). Wall-clock
@@ -254,7 +268,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.6.0"
+version: "3.7.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 

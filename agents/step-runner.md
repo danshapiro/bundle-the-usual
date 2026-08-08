@@ -5,6 +5,15 @@ meta:
 
 model_role: [reasoning, general]
 
+# Reserve the full provider-reported output ceiling when sizing the
+# compaction budget, so an overlong response never overruns the request
+# window mid-turn and wastes the round. Deep-merges onto the parent's
+# session.context.config at spawn (child scalar wins).
+session:
+  context:
+    config:
+      output_reserve_fraction: 1.0
+
 tools:
   - module: tool-filesystem
     source: git+https://github.com/microsoft/amplifier-module-tool-filesystem@main
@@ -12,6 +21,14 @@ tools:
     source: git+https://github.com/microsoft/amplifier-module-tool-search@main
   - module: tool-bash
     source: git+https://github.com/microsoft/amplifier-module-tool-bash@main
+  # Disable per-turn skill-catalog visibility (module lists merge by id onto
+  # the parent's mount, so this reconfigures rather than duplicates it).
+  # load_skill(name) itself remains available; only the every-turn listing
+  # of all catalog entries is suppressed.
+  - module: tool-skills
+    config:
+      visibility:
+        enabled: false
 ---
 
 # Step Runner
