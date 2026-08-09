@@ -34,6 +34,49 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.8.0-draft (2026-08-09) [DRAFT — version field reads 3.8.0 because the
+#   recipe engine rejects pre-release tags; treat as draft until merged]:
+#   - SPEED RELEASE (trace-driven; A/B-validated on a 6-task benchmark matrix
+#     with quality gates held 12/12 runs; no gate, review-count, or
+#     methodology-coverage changes). Measured effect of the two speed blocks
+#     on the benchmarks: step-runner LLM-turn count down 15-39% per heavy
+#     step at equal work; wall-clock neutral on the toy-scale benchmark repos
+#     (3/6 faster, 3/6 slower, dominated by review-loop-count noise) and
+#     projected material on real-scale repos, where the measured sinks live
+#     (12-15 min re-survey waves; 1-3 min turn latency). Full evidence:
+#     /tmp/the-usual-speed-report.md (2026-08-09). Real-run mining (14 full runs,
+#     2026-08-06..08-08, projects shapiroserver2 / nanoclaw-frontmatter-py312)
+#     measured per-step means of execute-plan 60m, load-bearing 54m,
+#     write-plan 33m, fresheyes-plan 15m/iteration; inside the heavy steps,
+#     35-50% of wall-clock was step-runner model-turn latency on
+#     single-tool-call turns (edit_file storms of 19-46 one-edit turns
+#     observed), and each stage re-explored the repository the previous
+#     stage had already surveyed (write-plan explorer wave, then a 12m
+#     load-bearing finder re-survey, then per-task implementer re-reads).
+#   - NEW: TURN ECONOMY block in the five heavy step prompts (write-plan,
+#     load-bearing, execute-plan, both fresheyes fix sections): batch
+#     independent tool calls and delegate dispatches into single turns;
+#     consolidate plan/ledger edits into batched sweeps; no solo-turn
+#     bookkeeping. Changes turn count, not work done.
+#   - NEW: EXPLORATION REUSE block in the same five steps:
+#     {{workspace.logs_dir}}/reports/ + INDEX.md is the run's shared
+#     exploration digest; later stages seed their subagents (load-bearing
+#     finder/validators, implementers, task reviewers, fix explorers) with
+#     existing report paths and explore only the gaps. Orientation only:
+#     validators/reviewers still independently verify what they check.
+#   - BUGFIX (robustness): per-run anchor path. workspace-setup's anchor is
+#     now /tmp/the-usual-pending-output.{{session.id}}.json — the old fixed
+#     /tmp path was shared by ALL concurrent/consecutive runs and cross-run
+#     contamination was observed in the wild (an unrelated repo's values
+#     sitting in the shared anchor while other runs were live).
+#   - BUGFIX (robustness): write-plan output contract now has the same
+#     file-based pickup as load-bearing/execute (8a67483): the step writes
+#     write-plan-result.json and a new write-plan-collect step reads it
+#     (result file -> pending-output anchor -> loud failure), ending the
+#     observed garbage-plan failure mode ('Cannot access plan_path on
+#     {{plan}} — it's a str', 2026-08-08 ~04:00 and ~13:10) where a
+#     corrupted `plan` string propagated into every later template.
+#
 # v3.7.0 (2026-08-08):
 #   - RELEASE HYGIENE (no recipe logic changes): lands the bundle-side files
 #     of the v3.3.0 context-discipline config, which the v3.3.0 changelog
@@ -268,7 +311,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.7.0"
+version: "3.8.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -435,16 +478,19 @@ steps:
 
       Because your context may be compacted during this long task:
       (a) ANCHOR — as your FIRST action, write this JSON skeleton with
-          placeholder values to /tmp/the-usual-pending-output.json (this step
-          creates the logs dir, so anchor in /tmp) and add a todo item "FINAL
+          placeholder values to /tmp/the-usual-pending-output.{{session.id}}.json
+          (this step creates the logs dir, so anchor in /tmp; the
+          session-scoped filename keeps concurrent and consecutive runs from
+          ever sharing one anchor file) and add a todo item "FINAL
           ACT: emit completed output JSON as my last message". Then UPDATE that
           file throughout the step as real values become known (e.g. write
           worktree_path and branch as soon as the worktree exists, base_ref as
           soon as it is recorded), so at any moment it reflects your best-known
           values.
       (b) RECOVERY — immediately after the anchor setup, BEFORE starting
-          work, check whether /tmp/the-usual-pending-output.json already exists
-          with non-placeholder values, and inspect the workspace for a previous
+          work, check whether /tmp/the-usual-pending-output.{{session.id}}.json
+          already exists with non-placeholder values, and inspect the
+          workspace for a previous
           attempt's artifacts: an existing worktree under
           {{repo_path}}/.worktrees/ and an existing logs dir under
           {{repo_path}}/.worktrees/.the-usual-logs/. If a previous attempt
@@ -549,7 +595,10 @@ steps:
           and emit the contract JSON. A prior attempt's work counts — only its
           missing receipt failed it.
       (c) FINISH — when your work is done, read that file back, fill in real
-          values, and make the completed JSON your final message.
+          values, WRITE the completed JSON to
+          {{workspace.logs_dir}}/write-plan-result.json (the recipe reads this
+          file authoritatively even if your final message is lost or mangled),
+          and ALSO make the completed JSON your final message.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -568,6 +617,37 @@ steps:
       file path plus a summary of at most ~500 tokens. Work from the
       summaries; read specific report sections only when needed (bounded
       reads), never whole reports by reflex.
+
+      TURN ECONOMY (fixed policy — no discretion). Reason: measured runs of
+      this recipe spent 35-50% of heavy-step wall-clock on model-turn
+      latency, much of it on turns that made a single small tool call.
+      Without changing WHAT you do, minimize HOW MANY turns it takes:
+      batch independent tool calls into ONE turn (multiple
+      read_file/edit_file/bash calls at once); dispatch independent delegate
+      calls in ONE batch, never one per turn; apply plan/ledger updates as
+      consolidated edit passes (one batched sweep per phase — never one
+      edit-turn per finding); fold anchor-file updates into turns that are
+      already doing other work. Never spend a whole turn on a single piece
+      of mechanical bookkeeping you could have attached to the previous turn.
+
+      EXPLORATION REUSE (fixed policy — no discretion). Reason: measured
+      runs re-surveyed the same repository from scratch in write-plan, again
+      in load-bearing, and again during execution. The reports directory
+      {{workspace.logs_dir}}/reports/ with its INDEX.md is this run's shared
+      exploration digest. BEFORE dispatching any explorer, finder, or
+      research subagent: read INDEX.md if it exists (bounded read); for
+      topics it already covers, pass the relevant report path(s) into the
+      dispatch prompt and instruct the subagent to READ THOSE REPORTS FIRST
+      and explore only what they do not answer — never re-dispatch a broad
+      survey for a topic a report already covers. In load-bearing, seed the
+      Phase 1 finder and the Phase 3 validators this way; in execution, seed
+      each implementer/task-reviewer dispatch with the report paths relevant
+      to its task. AFTER any new report lands, append one line to INDEX.md
+      (create it if missing): `<path> — <topic> — <1-2 sentence scope/key
+      finding>`. Digest reuse is orientation only — it must not weaken
+      verification: validators and reviewers still independently verify the
+      specific claims they check, and report content that looks stale or
+      contradicts what you observe must be re-explored, never trusted.
 
       Write the implementation plan for this task by following the methodology
       below EXACTLY. It is the user's writing-plans discipline, inlined in full.
@@ -824,6 +904,27 @@ steps:
         "feature": "<one-line feature name>"
       }
 
+  # ---- File-based pickup of the write-plan output contract. The write-plan
+  # step intermittently returned garbage/truncated chat output (observed
+  # 2026-08-08: `plan` became a raw string, breaking every later
+  # {{plan.plan_path}} template). The result file is authoritative; the
+  # pending-output anchor is the fallback; otherwise fail loudly rather than
+  # let a corrupted `plan` propagate.
+  - id: "write-plan-collect"
+    type: "bash"
+    output: "plan"
+    parse_json: true
+    command: |
+      if [ -s "{{workspace.logs_dir}}/write-plan-result.json" ]; then
+        cat "{{workspace.logs_dir}}/write-plan-result.json"
+      elif [ -s "{{workspace.logs_dir}}/pending-output.json" ] && grep -q '"plan_path"' "{{workspace.logs_dir}}/pending-output.json"; then
+        echo "WARNING: write-plan-result.json missing; using pending-output.json anchor" >&2
+        cat "{{workspace.logs_dir}}/pending-output.json"
+      else
+        echo "FATAL: write-plan output lost (no result file, no anchor). Cannot continue without a plan." >&2
+        exit 1
+      fi
+
   # ===========================================================================
   # STEP 2 — Load-bearing (full methodology + verbatim subagent prompts, inlined)
   # ===========================================================================
@@ -891,6 +992,37 @@ steps:
       file path plus a summary of at most ~500 tokens. Work from the
       summaries; read specific report sections only when needed (bounded
       reads), never whole reports by reflex.
+
+      TURN ECONOMY (fixed policy — no discretion). Reason: measured runs of
+      this recipe spent 35-50% of heavy-step wall-clock on model-turn
+      latency, much of it on turns that made a single small tool call.
+      Without changing WHAT you do, minimize HOW MANY turns it takes:
+      batch independent tool calls into ONE turn (multiple
+      read_file/edit_file/bash calls at once); dispatch independent delegate
+      calls in ONE batch, never one per turn; apply plan/ledger updates as
+      consolidated edit passes (one batched sweep per phase — never one
+      edit-turn per finding); fold anchor-file updates into turns that are
+      already doing other work. Never spend a whole turn on a single piece
+      of mechanical bookkeeping you could have attached to the previous turn.
+
+      EXPLORATION REUSE (fixed policy — no discretion). Reason: measured
+      runs re-surveyed the same repository from scratch in write-plan, again
+      in load-bearing, and again during execution. The reports directory
+      {{workspace.logs_dir}}/reports/ with its INDEX.md is this run's shared
+      exploration digest. BEFORE dispatching any explorer, finder, or
+      research subagent: read INDEX.md if it exists (bounded read); for
+      topics it already covers, pass the relevant report path(s) into the
+      dispatch prompt and instruct the subagent to READ THOSE REPORTS FIRST
+      and explore only what they do not answer — never re-dispatch a broad
+      survey for a topic a report already covers. In load-bearing, seed the
+      Phase 1 finder and the Phase 3 validators this way; in execution, seed
+      each implementer/task-reviewer dispatch with the report paths relevant
+      to its task. AFTER any new report lands, append one line to INDEX.md
+      (create it if missing): `<path> — <topic> — <1-2 sentence scope/key
+      finding>`. Digest reuse is orientation only — it must not weaken
+      verification: validators and reviewers still independently verify the
+      specific claims they check, and report content that looks stale or
+      contradicts what you observe must be re-explored, never trusted.
 
       Surface and verify the load-bearing assumptions of the plan, then fix the
       plan accordingly. The complete methodology and the exact subagent prompt
@@ -1474,6 +1606,37 @@ steps:
       (mkdir -p the reports dir first) and RETURN only that file path plus a
       summary of at most ~500 tokens; work from summaries with bounded reads.
 
+      TURN ECONOMY (fixed policy — no discretion). Reason: measured runs of
+      this recipe spent 35-50% of heavy-step wall-clock on model-turn
+      latency, much of it on turns that made a single small tool call.
+      Without changing WHAT you do, minimize HOW MANY turns it takes:
+      batch independent tool calls into ONE turn (multiple
+      read_file/edit_file/bash calls at once); dispatch independent delegate
+      calls in ONE batch, never one per turn; apply plan/ledger updates as
+      consolidated edit passes (one batched sweep per phase — never one
+      edit-turn per finding); fold anchor-file updates into turns that are
+      already doing other work. Never spend a whole turn on a single piece
+      of mechanical bookkeeping you could have attached to the previous turn.
+
+      EXPLORATION REUSE (fixed policy — no discretion). Reason: measured
+      runs re-surveyed the same repository from scratch in write-plan, again
+      in load-bearing, and again during execution. The reports directory
+      {{workspace.logs_dir}}/reports/ with its INDEX.md is this run's shared
+      exploration digest. BEFORE dispatching any explorer, finder, or
+      research subagent: read INDEX.md if it exists (bounded read); for
+      topics it already covers, pass the relevant report path(s) into the
+      dispatch prompt and instruct the subagent to READ THOSE REPORTS FIRST
+      and explore only what they do not answer — never re-dispatch a broad
+      survey for a topic a report already covers. In load-bearing, seed the
+      Phase 1 finder and the Phase 3 validators this way; in execution, seed
+      each implementer/task-reviewer dispatch with the report paths relevant
+      to its task. AFTER any new report lands, append one line to INDEX.md
+      (create it if missing): `<path> — <topic> — <1-2 sentence scope/key
+      finding>`. Digest reuse is orientation only — it must not weaken
+      verification: validators and reviewers still independently verify the
+      specific claims they check, and report content that looks stale or
+      contradicts what you observe must be re-explored, never trusted.
+
       Run ONE fresheyes review iteration on the PLAN. Fresheyes is a truly
       independent, cross-model review: the reviewer gets zero conversation
       context, a different model family than this session, and EXACTLY the
@@ -1637,6 +1800,37 @@ steps:
       file path plus a summary of at most ~500 tokens. Work from the
       summaries; read specific report sections only when needed (bounded
       reads), never whole reports by reflex.
+
+      TURN ECONOMY (fixed policy — no discretion). Reason: measured runs of
+      this recipe spent 35-50% of heavy-step wall-clock on model-turn
+      latency, much of it on turns that made a single small tool call.
+      Without changing WHAT you do, minimize HOW MANY turns it takes:
+      batch independent tool calls into ONE turn (multiple
+      read_file/edit_file/bash calls at once); dispatch independent delegate
+      calls in ONE batch, never one per turn; apply plan/ledger updates as
+      consolidated edit passes (one batched sweep per phase — never one
+      edit-turn per finding); fold anchor-file updates into turns that are
+      already doing other work. Never spend a whole turn on a single piece
+      of mechanical bookkeeping you could have attached to the previous turn.
+
+      EXPLORATION REUSE (fixed policy — no discretion). Reason: measured
+      runs re-surveyed the same repository from scratch in write-plan, again
+      in load-bearing, and again during execution. The reports directory
+      {{workspace.logs_dir}}/reports/ with its INDEX.md is this run's shared
+      exploration digest. BEFORE dispatching any explorer, finder, or
+      research subagent: read INDEX.md if it exists (bounded read); for
+      topics it already covers, pass the relevant report path(s) into the
+      dispatch prompt and instruct the subagent to READ THOSE REPORTS FIRST
+      and explore only what they do not answer — never re-dispatch a broad
+      survey for a topic a report already covers. In load-bearing, seed the
+      Phase 1 finder and the Phase 3 validators this way; in execution, seed
+      each implementer/task-reviewer dispatch with the report paths relevant
+      to its task. AFTER any new report lands, append one line to INDEX.md
+      (create it if missing): `<path> — <topic> — <1-2 sentence scope/key
+      finding>`. Digest reuse is orientation only — it must not weaken
+      verification: validators and reviewers still independently verify the
+      specific claims they check, and report content that looks stale or
+      contradicts what you observe must be re-explored, never trusted.
 
       Execute the plan. The complete methodology is inlined below: first the
       executing-plans process, then the subagent-driven development (SDD)
@@ -2573,6 +2767,37 @@ steps:
       to WRITE its full report to {{workspace.logs_dir}}/reports/<topic>.md
       (mkdir -p the reports dir first) and RETURN only that file path plus a
       summary of at most ~500 tokens; work from summaries with bounded reads.
+
+      TURN ECONOMY (fixed policy — no discretion). Reason: measured runs of
+      this recipe spent 35-50% of heavy-step wall-clock on model-turn
+      latency, much of it on turns that made a single small tool call.
+      Without changing WHAT you do, minimize HOW MANY turns it takes:
+      batch independent tool calls into ONE turn (multiple
+      read_file/edit_file/bash calls at once); dispatch independent delegate
+      calls in ONE batch, never one per turn; apply plan/ledger updates as
+      consolidated edit passes (one batched sweep per phase — never one
+      edit-turn per finding); fold anchor-file updates into turns that are
+      already doing other work. Never spend a whole turn on a single piece
+      of mechanical bookkeeping you could have attached to the previous turn.
+
+      EXPLORATION REUSE (fixed policy — no discretion). Reason: measured
+      runs re-surveyed the same repository from scratch in write-plan, again
+      in load-bearing, and again during execution. The reports directory
+      {{workspace.logs_dir}}/reports/ with its INDEX.md is this run's shared
+      exploration digest. BEFORE dispatching any explorer, finder, or
+      research subagent: read INDEX.md if it exists (bounded read); for
+      topics it already covers, pass the relevant report path(s) into the
+      dispatch prompt and instruct the subagent to READ THOSE REPORTS FIRST
+      and explore only what they do not answer — never re-dispatch a broad
+      survey for a topic a report already covers. In load-bearing, seed the
+      Phase 1 finder and the Phase 3 validators this way; in execution, seed
+      each implementer/task-reviewer dispatch with the report paths relevant
+      to its task. AFTER any new report lands, append one line to INDEX.md
+      (create it if missing): `<path> — <topic> — <1-2 sentence scope/key
+      finding>`. Digest reuse is orientation only — it must not weaken
+      verification: validators and reviewers still independently verify the
+      specific claims they check, and report content that looks stale or
+      contradicts what you observe must be re-explored, never trusted.
 
       Run ONE fresheyes review iteration on the DELTA between the original fork
       point and current HEAD. The reviewer gets zero conversation context, a
