@@ -2550,22 +2550,48 @@ steps:
 
       The gate procedure (run inside the worktree):
 
-      1. Run the repository's full test suite.
-      2. Record every failure in the progress ledger as a bug: the failing
-         test, the command, and the observed output. A failure counts as a
+      1. Identify the repository's exact full-suite command. Before
+         launching it, inspect the progress ledger and this run's recorded
+         artifacts for an invocation on the same committed HEAD with that
+         exact command. Adopt a valid passing result as the current logical
+         invocation. Treat a matching stopped invocation with valid output
+         likewise, whether the process completed normally or was
+         interrupted by infrastructure; await or resume a matching running
+         invocation. Clean up an unusable prior invocation through the
+         repository's documented path before replacing it. When no usable
+         matching invocation exists, record the committed HEAD, the exact
+         command, and the log or session location in the progress ledger,
+         then launch the suite inside the worktree.
+      2. If the current logical invocation is active, let it terminate
+         before repairing assertion failures; the runner's native
+         continuation counts as part of the same invocation when later
+         results remain trustworthy. Process its output. Record every
+         failure in the progress ledger as a bug: the failing test, the
+         command, and the observed output. Also record every configured
+         scope the runner did not reach. A failure counts as a
          LEDGER-RECORDED PRE-EXISTING FAILURE only if it also reproduces at
          the original fork commit {{workspace.base_ref}} -- the code this
          branch started from, without this branch's changes -- with that
-         reproduction receipt recorded in the ledger.
+         reproduction receipt recorded in the ledger. Return services,
+         queues, and other resources started by the repository to the
+         repository's documented reusable state before another interacting
+         run.
       3. If there are failures that are not ledger-recorded pre-existing
-         failures, dispatch ONE fix subagent with the complete failure list
-         (same batching rule as final-review fixes; the fixer verifies each
-         fix with its covering tests and commits). Do not fix ledger-recorded
-         pre-existing failures unless they block the feature's verification;
-         leave them recorded for the recap instead.
-      4. Rerun the full suite. Repeat record-fix-rerun until the suite is
-         green excluding ledger-recorded pre-existing failures. The gate
-         passes at that point, and only at that point.
+         failures, dispatch ONE fix subagent with the complete failure
+         list, addressing shared causes first (same batching rule as
+         final-review fixes; the fixer verifies each fix with its covering
+         tests and commits). That focused verification and those commits
+         complete before another full-suite invocation. Do not fix
+         ledger-recorded pre-existing failures unless they block the
+         feature's verification; leave them recorded for the recap instead.
+      4. If the current logical invocation is green excluding
+         ledger-recorded pre-existing failures, proceed directly to step 5.
+         Otherwise, only after the complete remediation pass or a concrete
+         infrastructure recovery, return to step 1 with the resulting
+         committed HEAD before launching another full invocation. Repeat
+         the inventory-remediation-rerun cycle until the suite is green
+         excluding ledger-recorded pre-existing failures. The gate passes
+         at that point, and only at that point.
       5. Record the gate entry in the progress ledger: time, HEAD, the exact
          command, the computed commit count that triggered it (or the
          trigger reason), and the result.
