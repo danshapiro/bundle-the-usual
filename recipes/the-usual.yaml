@@ -11,6 +11,12 @@
 # shell/PID-polling machinery -> context_depth + provider_preferences; script
 # files -> inline bash). EDITS TO THE WORKFLOW SHOULD BE MADE HERE.
 #
+# upstream: skill-the-usual @ a100facc784e93ef9fd8c6ef66658a95c1cdaeca
+#   (formal pin of the sibling skill repo this recipe was ported from;
+#   range d447273..a100fac reviewed and selectively adopted 2026-08-10 --
+#   see changelog v3.9.0-draft. Ports are deliberate translations to this
+#   recipe's mechanisms, never byte-syncs.)
+#
 # Two skills are still loaded by name at runtime because the author's copies
 # were byte-identical to the stock superpowers versions (verified by diff):
 # using-git-worktrees (Step 0) and requesting-code-review (final whole-branch
@@ -33,6 +39,53 @@
 # =============================================================================
 # CHANGELOG
 # =============================================================================
+#
+# v3.9.0-draft (2026-08-10) [DRAFT -- version field reads 3.9.0 because the
+#   recipe engine rejects pre-release tags; treat as draft until merged]:
+#   - UPSTREAM PORT (deliberate-port pattern per v3.5.0/v3.6.0; the full
+#     upstream range d447273..a100fac of skill-the-usual was reviewed on
+#     2026-08-10 and the portable improvements adopted):
+#     * NEW (upstream PR #5): machine-readable Outcome Block in the recap
+#       step. Every recap now ends with exactly one `## Outcome Block`
+#       heading plus one terminal json fence (schema_version 1: status,
+#       reason, execution_tasks, full_suite_gate, review_loops,
+#       head_commit_sha; success requires complete tasks + passed gate +
+#       both reviews PASSED). The recap is written to logs_dir/recap.md
+#       and validated before handoff by an embedded copy of upstream's
+#       stdlib-only validate-recap-outcome.py (non-zero exit = failed
+#       recap; sole exception to "nothing follows the warning block").
+#       Field sources are this recipe's own mechanisms -- execute_result
+#       counts, fresheyes logs, progress-ledger gate entries -- NOT
+#       upstream's run-state.md, which is not adopted.
+#     * NEW: scripts/validate-recap-outcome.py and tests/ -- byte-faithful
+#       port of the upstream validator and its unittest suite (the repo's
+#       first executable + tests), plus tests/test_recipe_recap_block.py,
+#       which extracts the embedded twin from this YAML and runs it
+#       against known-good/known-bad fixtures.
+#     * CHANGED (gate hardening; upstream commits 43c7033..9f04cd7 as
+#       prose): full-suite gate steps 1-4 rewritten around a "current
+#       logical invocation": identify the exact command, then
+#       adopt/await/resume a matching prior invocation at the same
+#       committed HEAD before launching (stopped invocations with valid
+#       output count; unusable prior invocations are cleaned up first;
+#       every launch is recorded in the ledger beforehand); let active
+#       invocations terminate before repairing; also record configured
+#       scopes the runner did not reach; return services/queues to their
+#       documented reusable state; fail-closed loop back through step 1
+#       at the new committed HEAD. Translated to this recipe's mechanisms
+#       (progress ledger in `git rev-parse --git-path sdd`, base_ref
+#       reproduction receipts); upstream's baseline-ledger reference
+#       clause is omitted -- no baseline ledger exists in a bundle run.
+#     * NOT DONE (deliberate, out of scope): run-state.md and
+#       baseline-ledger machinery; Fresh Eyes harness/transport split and
+#       the rewritten reviewer-prompt.md (this recipe deliberately
+#       reviews via delegate()); CI drift tripwires; vendoring or
+#       byte-equality sync; touchpoint fixtures; review-endpoints
+#       rewording (this recipe's dispatch templates already state exact
+#       endpoints).
+#   - NEW: formal upstream pin in the header block above (`upstream:
+#     skill-the-usual @ a100fac...`), replacing informal changelog-only
+#     provenance.
 #
 # v3.8.0-draft (2026-08-09) [DRAFT — version field reads 3.8.0 because the
 #   recipe engine rejects pre-release tags; treat as draft until merged]:
@@ -311,7 +364,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.8.0"
+version: "3.9.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
