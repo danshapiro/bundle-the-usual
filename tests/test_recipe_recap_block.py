@@ -31,9 +31,7 @@ VALID_PAYLOAD = {
 def recap_document(payload: object) -> str:
     return (
         "# Recap\n\nHuman-facing content.\n\n"
-        "## Outcome Block\n\n```json\n"
-        + json.dumps(payload, indent=2)
-        + "\n```\n"
+        "## Outcome Block\n\n```json\n" + json.dumps(payload, indent=2) + "\n```\n"
     )
 
 
@@ -52,11 +50,25 @@ class RecipeRecapBlockTest(unittest.TestCase):
         self.assertIn(BEGIN_MARKER, self.prompt)
         self.assertIn(END_MARKER, self.prompt)
 
-    def test_embedded_validator_validates_fixtures(self) -> None:
+    def _embedded_source(self) -> str:
         start = self.prompt.index(BEGIN_MARKER)
         start = self.prompt.index("\n", start) + 1
         end = self.prompt.index(END_MARKER)
-        source = self.prompt[start:end]
+        return self.prompt[start:end]
+
+    def test_embedded_validator_is_byte_identical_to_standalone_script(self) -> None:
+        standalone = (ROOT / "scripts" / "validate-recap-outcome.py").read_text(
+            encoding="utf-8"
+        )
+        self.assertEqual(
+            self._embedded_source(),
+            standalone,
+            "embedded validator twin in recipes/the-usual.yaml has drifted from "
+            "scripts/validate-recap-outcome.py -- update both together",
+        )
+
+    def test_embedded_validator_validates_fixtures(self) -> None:
+        source = self._embedded_source()
         with tempfile.TemporaryDirectory() as directory:
             script = Path(directory) / "validate-recap-outcome.py"
             script.write_text(source, encoding="utf-8")
