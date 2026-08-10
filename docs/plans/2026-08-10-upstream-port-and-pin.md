@@ -27,7 +27,7 @@ yaml"`), Python 3 stdlib only (`json`, `pathlib`, `re`, `sys`,
 
 ## Global Constraints
 
-- Worktree root (all work happens here): `/home/dan/code/bundle-the-usual/.worktrees/upstream-port-and-pin`, branch `speed-v3.8.0-draft`, base HEAD `e44ee2d`. Every command below runs from this root (`cd` there first) unless it says otherwise.
+- Worktree root (all work happens here): `/home/dan/code/bundle-the-usual/.worktrees/upstream-port-and-pin`, branch `upstream-port-and-pin` (created from `speed-v3.8.0-draft`), base HEAD `a54b908` (the commit adding this plan; its parent `e44ee2d` is the v3.8.0-draft base). Every command below runs from this root (`cd` there first) unless it says otherwise.
 - `/home/dan/code/skill-the-usual` is **read-only reference material**. Never write to it, commit to it, or change its checkout in any way. Only `git -C /home/dan/code/skill-the-usual show/diff/log/rev-parse ...` reads are allowed.
 - Upstream pin SHA (the commit actually reviewed for this port): `a100facc784e93ef9fd8c6ef66658a95c1cdaeca` (= `origin/main` of skill-the-usual; short `a100fac`). Reviewed range: `d447273..a100fac`.
 - EXPLICITLY OUT OF SCOPE (do not do, in any task): adopting `run-state.md` or baseline-ledger machinery; changing Fresh Eyes transport (the bundle deliberately uses `delegate()` — do not import harness requirements or `reviewer-prompt.md`); CI drift tripwires; vendoring/sync scripts or byte-equality-with-upstream tests; upstreaming anything to skill-the-usual.
@@ -54,7 +54,7 @@ yaml"`), Python 3 stdlib only (`json`, `pathlib`, `re`, `sys`,
 | `scripts/validate-recap-outcome.py` | Create (Task 1) | Byte-faithful port of upstream's standalone recap Outcome Block validator. First executable in this repo. |
 | `tests/test_recap_outcome_validator.py` | Create (Task 1) | Byte-faithful port of upstream's validator test suite (14 tests, subprocess-driven CLI contract). |
 | `tests/test_recipe_recap_block.py` | Create (Task 2) | Bundle-specific: asserts the recipe's recap prompt declares the Outcome Block, and extracts the validator embedded in the recipe YAML and runs it against known-good/known-bad fixtures. |
-| `recipes/the-usual.yaml` | Modify (Tasks 2, 3, 4) | Task 2: Outcome Block section + embedded validator in the recap step (~line 2910-3004 region). Task 3: full-suite gate steps 1-4 rewrite (~line 2549-2587 region, shifted ~+330 lines after Task 2). Task 4: header pin line, changelog entry, `version:` bump. |
+| `recipes/the-usual.yaml` | Modify (Tasks 2, 3, 4) | Task 2: Outcome Block section + embedded validator in the recap step (~line 2910-3004 region). Task 3: full-suite gate steps 1-4 rewrite (~line 2549-2587 region, shifted ~+294 lines after Task 2). Task 4: header pin line, changelog entry, `version:` bump. |
 
 No other files change. The one-shot splice script in Task 2 lives at
 `/tmp/splice-outcome-block.py` and is never committed.
@@ -829,7 +829,9 @@ cd /home/dan/code/bundle-the-usual/.worktrees/upstream-port-and-pin
 python3 /tmp/splice-outcome-block.py
 ```
 Expected: `spliced Outcome Block section into recipes/the-usual.yaml
-(+3xx lines)` and exit 0. On exit 3, go back to Step 3's anchor
+(+294 lines)` and exit 0 (the exact `+294` was confirmed by a sandbox
+dry-run of this script against the current recipe; see Verification
+notes). On exit 3, go back to Step 3's anchor
 adjustment. Running it a second time must print `already spliced;
 nothing to do` and exit 1 (do not run it twice for real).
 
@@ -1188,3 +1190,21 @@ git commit -m "feat: pin upstream skill-the-usual @ a100fac; changelog + version
   `behaviors/the-usual.yaml` version fields stay at 3.7.0 per the
   repo's own draft-release precedent. README.md is untouched (strict
   "port + pin, nothing else" scope).
+- Load-bearing validation receipts (2026-08-10; full evidence in the run's
+  logs dir under `reports/`): the exact splice pipeline was dry-run
+  end-to-end in a /tmp sandbox -- splice exit 0 printing `+294 lines`,
+  spliced YAML parses to `3.8.0 12`, the embedded twin extracted from the
+  spliced YAML is byte-identical to upstream a100fac (sha256
+  `317c7d56...02d97`), a second run prints `already spliced` and exits 1,
+  and the REAL recipes engine validates both the spliced file at 3.8.0 and
+  its 3.9.0-bumped variant with zero warnings (`validator-A4-A2.md`).
+  Upstream's 14-test suite runs green byte-faithfully under python3 3.12.3
+  (`validator-A5.md`). Amplifier bundle install/loading was inspected at
+  source and is strictly manifest-driven -- the new `scripts/` and `tests/`
+  dirs are inert for consumers (`validator-A3.md`). Runtime transcription
+  of the embedded validator by same-class LLM agents was sampled 3/3
+  byte-identical (`validator-A1-trial{1,2,3}.md`); the residual
+  transcription risk is recorded as an `acceptable` decision in the
+  load-bearing ledger (the py_compile + rerun-until-exit-0 loop fails loud,
+  and a deterministic delivery path would violate this plan's "no step
+  structure / output contract changes" constraint).
