@@ -34,6 +34,30 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.8.0 (2026-08-10):
+#   - BUGFIX (robustness): per-run anchor path. workspace-setup's compaction
+#     anchor is now /tmp/the-usual-pending-output.{{session.id}}.json — the
+#     old fixed /tmp path was shared by ALL concurrent/consecutive runs and
+#     cross-run contamination was observed in the wild (an unrelated repo's
+#     values sitting in the shared anchor while other runs were live).
+#   - BUGFIX (robustness): write-plan output contract now has the same
+#     file-based pickup as load-bearing/execute (8a67483): the step writes
+#     write-plan-result.json and a new write-plan-collect step reads it
+#     (result file -> pending-output anchor -> loud failure), ending the
+#     observed garbage-plan failure mode ('Cannot access plan_path on
+#     {{plan}} — it's a str', 2026-08-08 ~04:00 and ~13:10) where a
+#     corrupted `plan` string propagated into every later template. Unlike
+#     the earlier collects, both pickup sources are validated before use:
+#     plan_path must be an absolute path to an existing file (the anchor
+#     skeleton contains a placeholder "plan_path" key from minute zero, so a
+#     key-presence check alone would forward placeholder garbage with only
+#     a stderr warning). Both fallback branches (anchor pickup,
+#     FATAL) crash-drilled against fixture logs dirs before landing.
+#   - These two fixes were extracted from the speed-v3.8.0-draft branch
+#     (e44ee2d) per council review 2026-08-10; the TURN ECONOMY /
+#     EXPLORATION REUSE speed blocks from that branch are NOT included —
+#     they await a wording pass and a real-scale A/B before merge.
+#
 # v3.7.0 (2026-08-08):
 #   - RELEASE HYGIENE (no recipe logic changes): lands the bundle-side files
 #     of the v3.3.0 context-discipline config, which the v3.3.0 changelog
@@ -268,7 +292,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.7.0"
+version: "3.8.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -435,16 +459,19 @@ steps:
 
       Because your context may be compacted during this long task:
       (a) ANCHOR — as your FIRST action, write this JSON skeleton with
-          placeholder values to /tmp/the-usual-pending-output.json (this step
-          creates the logs dir, so anchor in /tmp) and add a todo item "FINAL
+          placeholder values to /tmp/the-usual-pending-output.{{session.id}}.json
+          (this step creates the logs dir, so anchor in /tmp; the
+          session-scoped filename keeps concurrent and consecutive runs from
+          ever sharing one anchor file) and add a todo item "FINAL
           ACT: emit completed output JSON as my last message". Then UPDATE that
           file throughout the step as real values become known (e.g. write
           worktree_path and branch as soon as the worktree exists, base_ref as
           soon as it is recorded), so at any moment it reflects your best-known
           values.
       (b) RECOVERY — immediately after the anchor setup, BEFORE starting
-          work, check whether /tmp/the-usual-pending-output.json already exists
-          with non-placeholder values, and inspect the workspace for a previous
+          work, check whether /tmp/the-usual-pending-output.{{session.id}}.json
+          already exists with non-placeholder values, and inspect the
+          workspace for a previous
           attempt's artifacts: an existing worktree under
           {{repo_path}}/.worktrees/ and an existing logs dir under
           {{repo_path}}/.worktrees/.the-usual-logs/. If a previous attempt
@@ -549,7 +576,10 @@ steps:
           and emit the contract JSON. A prior attempt's work counts — only its
           missing receipt failed it.
       (c) FINISH — when your work is done, read that file back, fill in real
-          values, and make the completed JSON your final message.
+          values, WRITE the completed JSON to
+          {{workspace.logs_dir}}/write-plan-result.json (the recipe reads this
+          file authoritatively even if your final message is lost or mangled),
+          and ALSO make the completed JSON your final message.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -823,6 +853,38 @@ steps:
         "plan_path": "<absolute path to the committed plan file>",
         "feature": "<one-line feature name>"
       }
+
+  # ---- File-based pickup of the write-plan output contract. The write-plan
+  # step intermittently returned garbage/truncated chat output (observed
+  # 2026-08-08: `plan` became a raw string, breaking every later
+  # {{plan.plan_path}} template). The result file is authoritative; the
+  # pending-output anchor is the fallback. Either source is accepted ONLY if
+  # its plan_path is an absolute path to a file that actually exists — the
+  # anchor skeleton contains a placeholder "plan_path" key from minute zero,
+  # so a key-presence check alone would forward placeholder garbage.
+  # Otherwise fail loudly rather than let a corrupted `plan` propagate.
+  - id: "write-plan-collect"
+    type: "bash"
+    output: "plan"
+    parse_json: true
+    command: |
+      plan_ok() {
+        [ -s "$1" ] || return 1
+        p=$(sed -n 's/.*"plan_path"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$1" | head -n 1)
+        case "$p" in
+          /*) [ -f "$p" ] || return 1 ;;
+          *) return 1 ;;
+        esac
+      }
+      if plan_ok "{{workspace.logs_dir}}/write-plan-result.json"; then
+        cat "{{workspace.logs_dir}}/write-plan-result.json"
+      elif plan_ok "{{workspace.logs_dir}}/pending-output.json"; then
+        echo "WARNING: write-plan-result.json missing or invalid; using pending-output.json anchor" >&2
+        cat "{{workspace.logs_dir}}/pending-output.json"
+      else
+        echo "FATAL: write-plan output lost or invalid (no result file or anchor whose plan_path points at a real file). Cannot continue without a plan." >&2
+        exit 1
+      fi
 
   # ===========================================================================
   # STEP 2 — Load-bearing (full methodology + verbatim subagent prompts, inlined)
