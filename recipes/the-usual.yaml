@@ -34,6 +34,19 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.12.0 (2026-08-14):
+#   - CHANGED: Fresh Eyes independence + verdict policy (policy-only port of
+#     skill-the-usual 53b8f04, Seam 2; the shell/transport machinery itself
+#     remains intentionally unported — cross-model review is a delegate
+#     parameter here). Three hardenings in both fresheyes-plan and
+#     fresheyes-delta:
+#     * same-family reviewer selection is now REJECTED (NO_MARKER — not
+#       passed, consumes the round, surfaces the mandatory warning) instead of
+#       being a parenthetical "should be different" suggestion;
+#     * conflicting PASSED/FAILED markers in one report count as NOT passed;
+#     * every round's log entry records the reviewer identity label actually
+#       used (provider/model or active override).
+#
 # v3.11.0 (2026-08-14):
 #   - NEW: baseline ledger (ported from skill-the-usual 86377ed, adapted).
 #     workspace-setup now establishes the run's baseline before completing:
@@ -400,7 +413,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.11.0"
+version: "3.12.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -1699,15 +1712,19 @@ steps:
           fresheyes only reviews committed work. Do not commit anything under the
           logs dir (it lives outside the worktree tree by design).
 
-      (b) DELEGATE THE REVIEW: call the delegate tool with:
+      (b) DELEGATE THE REVIEW: first verify the configured reviewer is a
+          DIFFERENT model family than this session's (Anthropic) executor —
+          {{reviewer_provider}}/{{reviewer_model}}. Independence is the point
+          of this step, so a same-family selection is rejected, not run: treat
+          it as NO_MARKER (counts as NOT passed, consumes the round, and gets
+          the mandatory warning). Otherwise call the delegate tool with:
             - instruction = the exact text between the BEGIN/END markers below
               (markers excluded), and NOTHING more.
             - context_depth = "none"  (zero-context independence)
             - provider_preferences = [ { "provider": "{{reviewer_provider}}",
                                          "model": "{{reviewer_model}}" } ]
-              (a DIFFERENT model family than this session's Anthropic executor;
-              provider_preferences pins the reviewer model, so no model_role is
-              needed on this dispatch)
+              (provider_preferences pins the reviewer model, so no model_role
+              is needed on this dispatch)
             - No specialized reviewer agent/persona — the persona is entirely in
               the instruction text. Use a general-purpose delegation target.
 
@@ -1724,13 +1741,16 @@ steps:
       (c) EXTRACT THE VERDICT: from the reviewer's returned text, find the marker
           line matching (case-insensitive) `INDEPENDENT CODE REVIEW PASSED` or
           `INDEPENDENT CODE REVIEW FAILED`. PASSED (or a report listing only
-          nit/cosmetic issues) => passed. FAILED, or NO marker found at all, or a
-          review the judge said it could not perform => NOT passed.
+          nit/cosmetic issues) => passed. FAILED, or NO marker found at all, or
+          CONFLICTING markers in one report, or a review the judge said it could
+          not perform => NOT passed.
 
       (d) APPEND this iteration's outcome to
           `{{workspace.logs_dir}}/fresheyes-plan.md` — record the verdict, the
-          blocking issues (severity + file:line + description), and the
-          reviewer's summary — for the recap stage.
+          blocking issues (severity + file:line + description), the reviewer's
+          summary, and the reviewer identity label actually used
+          ({{reviewer_provider}}/{{reviewer_model}}, or the override in force)
+          — for the recap stage.
 
       (e) IF NOT PASSED: fix ONLY the blocking issues the reviewer raised,
           editing the plan at {{plan.plan_path}} (re-run the writing-plans
@@ -2837,7 +2857,12 @@ steps:
       (a) COMMIT FIRST: ensure all work in the worktree is committed before
           review. Do not commit anything under the logs dir.
 
-      (b) DELEGATE THE REVIEW: call the delegate tool with:
+      (b) DELEGATE THE REVIEW: first verify the configured reviewer is a
+          DIFFERENT model family than this session's (Anthropic) executor —
+          {{reviewer_provider}}/{{reviewer_model}}. Independence is the point
+          of this step, so a same-family selection is rejected, not run: treat
+          it as NO_MARKER (counts as NOT passed, consumes the round, and gets
+          the mandatory warning). Otherwise call the delegate tool with:
             - instruction = the exact text between the BEGIN/END markers below
               (markers excluded), and NOTHING more.
             - context_depth = "none"
@@ -2865,11 +2890,14 @@ steps:
 
       (c) EXTRACT THE VERDICT: find the marker line (case-insensitive)
           `INDEPENDENT CODE REVIEW PASSED` or `INDEPENDENT CODE REVIEW FAILED`.
-          PASSED (or only nit/cosmetic issues) => passed. FAILED, no marker, or a
-          review that could not be performed => NOT passed.
+          PASSED (or only nit/cosmetic issues) => passed. FAILED, no marker,
+          CONFLICTING markers in one report, or a review that could not be
+          performed => NOT passed.
 
       (d) APPEND this iteration's outcome (verdict, blocking issues with
-          severity + file:line, summary) to
+          severity + file:line, summary, and the reviewer identity label
+          actually used: {{reviewer_provider}}/{{reviewer_model}} or the
+          override in force) to
           `{{workspace.logs_dir}}/fresheyes-delta.md` for the recap stage.
 
       (e) IF NOT PASSED: fix ONLY the blocking issues the reviewer raised, in the
