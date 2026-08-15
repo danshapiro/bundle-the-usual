@@ -34,6 +34,24 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.10.0 (2026-08-14):
+#   - NEW: machine-validated recap outcome block (ported from skill-the-usual
+#     08fa196). Every recap now ends with exactly one "## Outcome Block"
+#     heading and one fenced json object (status/reason, task counts, gate
+#     result, review-loop rounds and verdicts, final HEAD SHA), copied from
+#     recorded artifacts — never invented. The recap step writes
+#     {{workspace.logs_dir}}/recap.md and self-validates with the new
+#     scripts/validate-recap-outcome.py (fix-until-clean); a new terminal
+#     recap-outcome-validate bash step re-runs the check as a hard gate so a
+#     skipped or falsely-claimed validation cannot ship. Replaces hopeful
+#     parsing as the defense against compacted/corrupted terminal output.
+#   - NEW: scripts/validate-recap-outcome.py — deterministic schema and
+#     consistency checker (zero deps), located at runtime via
+#     THE_USUAL_BUNDLE_DIR or ~/.amplifier/registry.json.
+#   - MERGE NOTE: edits the recap step's tail instructions and appends the
+#     recap-outcome-validate step at the end of the recipe (plus
+#     changelog/version ledger fields).
+#
 # v3.9.0 (2026-08-14):
 #   - CHANGED: full-suite gate discipline (ported from skill-the-usual
 #     43c7033, 13e7b66, 860a6e6, e61a979, 9f04cd7). Step 4's gate no longer
@@ -308,7 +326,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.9.0"
+version: "3.10.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -2880,4 +2898,75 @@ steps:
         not, still emit the warning block, containing that note alone.
       - If both passed: no warning block — end normally.
 
-      Return the recap as your message text (plain prose, no JSON).
+      Write the full recap to {{workspace.logs_dir}}/recap.md.
+
+      ## Outcome Block
+
+      Sole machine-readable exception to the rule that a failure warning ends
+      the recap: keep every human-facing section and the warning behavior
+      above unchanged, then end the recap with exactly one "## Outcome Block"
+      heading and one fenced json object. NOTHING may follow its closing
+      fence. Copy every value from the recorded artifacts — invent nothing:
+
+      - execution_tasks: completed={{execute_result.tasks_completed}},
+        total={{execute_result.total_tasks}}
+      - full_suite_gate.result: from the final-HEAD gate entry in the
+        progress ledger — passed, failed, not-run, or blocked.
+      - review_loops: rounds and final verdict from
+        {{workspace.logs_dir}}/fresheyes-plan.md and
+        {{workspace.logs_dir}}/fresheyes-delta.md. Verdicts: PASSED, FAILED,
+        NO_MARKER, NOT_RUN. Plan rounds 0-3, delta rounds 0-5; NOT_RUN
+        requires 0 rounds, every other verdict at least 1.
+      - head_commit_sha: `git -C {{workspace.worktree_path}} rev-parse HEAD`
+        (full lowercase 40-char SHA).
+      - status "success" requires completed == total, gate result passed, and
+        both verdicts PASSED, with reason null. Anything else is status
+        "non-convergence" with a non-empty reason naming the partial, blocked,
+        failed-gate, or failed-review fact. schema_version is the integer 1.
+
+      {
+        "schema_version": 1,
+        "status": "success",
+        "reason": null,
+        "execution_tasks": { "completed": 2, "total": 2 },
+        "full_suite_gate": { "result": "passed" },
+        "review_loops": {
+          "plan":  { "rounds": 1, "final_verdict": "PASSED" },
+          "delta": { "rounds": 1, "final_verdict": "PASSED" }
+        },
+        "head_commit_sha": "0123456789abcdef0123456789abcdef01234567"
+      }
+
+      After writing recap.md, validate the outcome block and fix + rerun until
+      the validator exits 0 (a validation failure is a failed recap — correct
+      the block from the recorded artifacts, never weaken the check):
+
+      BUNDLE_DIR="${THE_USUAL_BUNDLE_DIR:-}"
+      if [ -z "$BUNDLE_DIR" ]; then
+        BUNDLE_DIR="$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.amplifier/registry.json")))["bundles"]["the-usual"]["local_path"])')"
+      fi
+      python3 "$BUNDLE_DIR/scripts/validate-recap-outcome.py" "{{workspace.logs_dir}}/recap.md"
+
+      Return the full recap as your message text (plain prose including the
+      outcome block; no additional JSON framing).
+
+  # ---- Hard gate: the recap's outcome block must pass the deterministic
+  # validator (ported from skill-the-usual 08fa196). A skipped or false
+  # "validated" claim in the recap step cannot ship: this step re-runs the
+  # check against the recap file on disk.
+  - id: "recap-outcome-validate"
+    type: "bash"
+    command: |
+      BUNDLE_DIR="${THE_USUAL_BUNDLE_DIR:-}"
+      if [ -z "$BUNDLE_DIR" ]; then
+        BUNDLE_DIR="$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.amplifier/registry.json")))["bundles"]["the-usual"]["local_path"])')" || {
+          echo "FATAL: cannot locate the the-usual bundle (set THE_USUAL_BUNDLE_DIR or register the bundle in ~/.amplifier/registry.json)" >&2
+          exit 1
+        }
+      fi
+      VALIDATOR="$BUNDLE_DIR/scripts/validate-recap-outcome.py"
+      [ -f "$VALIDATOR" ] || { echo "FATAL: validator not found at $VALIDATOR" >&2; exit 1; }
+      RECAP="{{workspace.logs_dir}}/recap.md"
+      [ -f "$RECAP" ] || { echo "FATAL: recap file missing at $RECAP — the recap step must write it" >&2; exit 1; }
+      python3 "$VALIDATOR" "$RECAP"
+    on_error: "fail"
