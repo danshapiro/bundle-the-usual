@@ -34,6 +34,37 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.11.0 (2026-08-14):
+#   - NEW: baseline ledger (ported from skill-the-usual 86377ed, adapted).
+#     workspace-setup now establishes the run's baseline before completing:
+#     one recorded full-suite invocation at base_ref, with raw evidence under
+#     logs_dir and a Baseline block as the progress ledger's FIRST entry
+#     (time, base commit, exact command, exit status, result, enumerated
+#     pre-existing failures or `none`, evidence path). "Pre-existing" gains a
+#     definition of record for the whole run: on the baseline list, or
+#     reproduced at base_ref later with a receipt — backfilling is forbidden.
+#     Behavior change: every run now pays one full-suite invocation at setup.
+#   - NEW: blocker resolution rule in execute-plan (ported from the same
+#     skill change): blockers stay binding until cleared by evidence or
+#     re-review; reviewer remedies are advisory; corrections stay
+#     proportionate and in-scope; findings are never edited away.
+#   - NEW: touchpoint inventory + tripwire
+#     (tests/fixtures/touchpoints.json + tests/test_run_contract.py): the
+#     recipe's hard-stop and prohibition sentences enumerated and asserted
+#     verbatim, so refactors cannot silently drop them. This recipe has no
+#     mid-run QUESTION kind by design — halts surface via the *-halt-guard
+#     steps — which the fixture documents.
+#   - NEW: author-facing RUN CONTRACT comment block (durable-record layout,
+#     base_ref invariance, author guidance). Comment-stripped, so agent-facing
+#     enforcement stays in step prompts; this block governs recipe edits.
+#   - BOUNDARY: the current-request carrier and amendment-reconciliation parts
+#     of skill 86377ed are deliberately excluded — they overlap the in-flight
+#     user-request/continuation port (feat/user-request-flow); whoever lands
+#     that work owns reconciling its manifest with this Baseline contract.
+#   - MERGE NOTE: edits workspace-setup (new numbered step 6), execute-plan
+#     (blocker rule section + ledger-creation paragraph), and comment/header
+#     areas only.
+#
 # v3.10.0 (2026-08-14):
 #   - NEW: machine-validated recap outcome block (ported from skill-the-usual
 #     08fa196). Every recap now ends with exactly one "## Outcome Block"
@@ -323,10 +354,53 @@
 #   - Initial port using runtime reads of personal skill files (superseded).
 #
 # =============================================================================
+# RUN CONTRACT (author-facing; ported from skill-the-usual 86377ed, adapted)
+# =============================================================================
+#
+# Comments here are stripped before prompts reach agents, so this section is
+# the AUTHOR contract: the durable invariants every step change must preserve.
+# Agent-facing enforcement lives in step prompts; the tripwire test
+# (tests/test_run_contract.py + tests/fixtures/touchpoints.json) fails loudly
+# when either drifts.
+#
+# Durable record and layout (adapter: the recipes engine's checkpointing owns
+# interruption state; this contract deliberately does not duplicate it):
+# - Progress ledger: `$(git -C <worktree> rev-parse --git-path sdd)/progress.md`
+#   — inside the worktree's git dir: unique per repo instance, never in a diff.
+#   FIRST block is the Baseline entry (schema: time, base commit == base_ref,
+#   exact baseline command, exit status, result, enumerated pre-existing
+#   failures or `none`, evidence path). It defines what "pre-existing" means
+#   for the whole run; never rewrite or backfill it.
+# - Logs: {{workspace.logs_dir}} = <repo>/.worktrees/.the-usual-logs/<slug>/ —
+#   outside the tracked tree; receipts, reports, review logs, recap.md.
+# - Compaction anchors: per-run /tmp/the-usual-pending-output.{{session.id}}.json
+#   plus the logs-side result files the collect steps validate.
+#
+# base_ref invariance: base_ref is the full SHA captured in Step 0 before any
+# run commit; it never changes. The final delta review diffs base_ref...HEAD,
+# never a moving branch name.
+#
+# Blocker resolution rule (agent-facing copy lives in the execute-plan step):
+# substantiated blockers stay binding until cleared by evidence or re-review;
+# suggested remedies are advisory; corrections stay proportionate (KISS/YAGNI)
+# and inside plan/spec scope; a blocker is never cleared by editing the finding.
+#
+# Guidance for authors:
+# - HARD STOP and QUESTION touchpoints are exhaustive in
+#   tests/fixtures/touchpoints.json; this recipe has no mid-run QUESTION kind
+#   by design — halts surface to the parent via the *-halt-guard steps.
+# - Never weaken a touchpoint's wording to silence the tripwire test; either
+#   the sentence is load-bearing (keep verbatim, update the fixture if the
+#   words must legitimately change) or the behavior change is real and needs
+#   its own changelog entry.
+# - Prohibitions are already-resolved autonomous rules; do not convert them
+#   into runtime questions.
+#
+# =============================================================================
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.10.0"
+version: "3.11.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -541,6 +615,28 @@ steps:
       5. Create a logs directory OUTSIDE the worktree's tracked tree (so review
          logs never appear in any diff): `{{repo_path}}/.worktrees/.the-usual-logs/<slug>/`.
          Create it with `mkdir -p`. This is where later stages append their findings.
+      6. Establish the baseline (required before this step may complete):
+         identify the repository's exact full-suite command from its
+         build/test configuration, run it ONCE inside the worktree, and record
+         the outcome. Save raw output under your logs dir
+         (baseline-full-suite.txt; split files when large), and create the
+         progress ledger at `$(cd <worktree_path> && git rev-parse --git-path sdd)/progress.md`
+         with this Baseline block as its FIRST entry:
+
+         ## Baseline (recorded at workspace setup)
+         - time: <ISO 8601>
+         - base commit: <the same full SHA as base_ref>
+         - command: <the exact baseline full-suite command>
+         - exit status: <integer>
+         - result: <observed summary>
+         - pre-existing failures: none | <the complete enumerated list of failing tests>
+         - evidence: <path to the raw baseline report under logs_dir>
+
+         Record `none` explicitly when the baseline is green. A later failure
+         may count as LEDGER-RECORDED PRE-EXISTING only if it is on this list
+         or is later reproduced at base_ref with that receipt recorded in the
+         ledger; backfilling the list after the fact is not allowed. later
+         stages reference this block — never rewrite or delete it.
 
       Cross-cutting rules (complete as stated — apply throughout):
       - Preserve unrelated changes from other agents in the same repo — never
@@ -2067,11 +2163,14 @@ steps:
         `cat "$(git rev-parse --git-path sdd)/progress.md"` (run inside the
         worktree). Tasks listed there as complete are DONE — do not re-dispatch
         them; resume at the first task not marked complete.
-      - When creating the ledger (no prior entries), record the current time
-        and HEAD as its first entry -- the reference point for the full-suite
-        gate's periodic trigger. Every gate entry records time, HEAD, the
-        computed commit count that triggered it (or the trigger reason), and
-        result.
+      - When no ledger exists -- it should already exist with a Baseline entry
+        from Step 0; recreate it if recovery removed it -- create it with a
+        Baseline entry as its first block: time, HEAD, the exact baseline
+        command, exit status, result summary, the enumerated pre-existing
+        failures (or `none`), and the evidence path. The baseline entry's HEAD
+        is the reference point for the full-suite gate's periodic trigger.
+        Every gate entry records time, HEAD, the computed commit count that
+        triggered it (or the trigger reason), and result.
       - When a task's review comes back clean, append one line to the ledger in
         the same message as your other bookkeeping:
         `Task N: complete (commits <base7>..<head7>, review clean)`.
@@ -2447,6 +2546,17 @@ steps:
 
       A fix dispatch can address spec gaps and quality findings together;
       re-review after fixes covers both verdicts.
+
+      ## Blocker resolution rule
+
+      A substantiated blocker stays binding until cleared by evidence or
+      re-review. A reviewer's suggested remedy is advisory input, not
+      automatic work authorization: choose a complete, proportionate
+      correction inside the plan and spec's scope and the project's
+      established patterns (KISS, YAGNI). Never silently expand scope, and
+      never clear a blocker by editing or downgrading the finding itself.
+      If nothing compliant clears it, treat the loop as non-converged and
+      report that conflict.
 
       ## Full-suite gate
 
