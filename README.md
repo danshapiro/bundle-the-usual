@@ -20,7 +20,8 @@ stages, printing a big banner as it enters each long-running one:
 
 1. **Safe workspace** — work happens on an isolated branch in a dedicated
    folder inside your project. Nothing you have is touched until you decide to
-   merge the result.
+   merge the result. It also runs your project's full test suite once up front,
+   so later checks can tell pre-existing failures from new ones.
 2. **Plan** — it writes a detailed, step-by-step implementation plan with
    tests planned first, small tasks, exact file paths, and no hand-waving
    ("add error handling later" is not allowed).
@@ -37,7 +38,10 @@ stages, printing a big banner as it enters each long-running one:
 6. **Independent review of the result** — the complete set of changes gets
    the same fresh-eyes treatment, up to 5 rounds, until it passes.
 7. **Recap** — you get a report of what was found at every stage plus a
-   jargon-free summary of what was built, and options for merging it.
+   jargon-free summary of what was built, and options for merging it. The
+   report ends with a machine-checkable summary block whose claims are
+   verified against the run's records — a report that can't back up what it
+   says fails the run.
 
 It only stops mid-run for serious problems (for example, anything that risks
 data loss). Everything else is handled and reported at the end.
@@ -89,10 +93,11 @@ amplifier tool invoke recipes operation=execute \
 - **git** — the isolated-workspace stage uses git branches and worktrees.
 - **Two AI provider accounts** (for example Anthropic + OpenAI), configured in
   Amplifier. The independent reviews deliberately use a different AI company
-  than the one doing the work — that separation is the point. By default the
-  work is done by whatever model your session runs and reviews go to OpenAI;
-  override with the `reviewer_provider` / `reviewer_model` options if your
-  setup is reversed.
+  than the one doing the work — that separation is the point, and the run
+  refuses to review with a same-family model rather than silently weakening
+  independence. By default the work is done by whatever model your session
+  runs and reviews go to OpenAI; override with the `reviewer_provider` /
+  `reviewer_model` options if your setup is reversed.
 
 ## What's in this repository
 
@@ -101,7 +106,11 @@ amplifier tool invoke recipes operation=execute \
 | `recipes/the-usual.yaml` | The workflow itself — every stage, rule, and review prompt |
 | `context/the-usual-instructions.md` | Teaches the assistant to recognize "with the usual" |
 | `behaviors/the-usual.yaml` | The hook that loads those instructions into your sessions |
+| `scripts/validate-recap-outcome.py` | The deterministic checker the recap's summary block must pass |
+| `tests/` | Static contract tests guarding the workflow's safety rules and version ledger |
 | `bundle.md` | The package definition Amplifier installs |
+
+To run the tests: `python3 -m unittest discover -s tests` (zero dependencies).
 
 ## License
 
