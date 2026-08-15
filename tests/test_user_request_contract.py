@@ -486,7 +486,7 @@ class TestRejectedMechanismsStayAbsent(unittest.TestCase):
 
     def test_no_standalone_source_runtime_reference(self):
         runtime = f"{RECIPE}\n{INSTRUCTIONS}\n{README}\n{BUNDLE}\n{BEHAVIOR}".lower()
-        self.assertNotIn("/home/dan/code/skill-the-usual", runtime)
+        self.assertNotRegex(runtime, r"(?:^|[/\\])skill-the-usual\b")
         self.assertNotIn("standalone canonical prompt", runtime)
 
     def test_step_runner_matches_current_head(self):
