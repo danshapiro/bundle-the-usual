@@ -77,16 +77,34 @@ Start Amplifier (`amplifier`) and ask for work "with the usual":
   folder it wants to create and asks for your OK first.
 - Long stages announce themselves with unmissable banners, so you can tell
   where the run is at a glance.
-- If a run is interrupted, it can resume where it left off rather than
-  starting over.
+- The conversational parent condenses the full conversation into a sanitized
+  `## User Request` current snapshot. It applies later explicit additions,
+  withdrawals, and superseding decisions before the workflow plans or
+  delegates work. The snapshot carries no revision metadata; Git history is
+  the revision history.
+- For an unchanged interruption, the parent can use the normal
+  `recipes(operation="resume", session_id=...)` path. Changed direction
+  requires parent judgment about affected work rather than an automatic
+  changed-intent continuation. Because recipe execution is a blocking call,
+  the parent can redirect the run only after that call returns or is
+  interrupted.
 
 You can also skip the conversation and run it directly:
 
 ```bash
 amplifier tool invoke recipes operation=execute \
   recipe_path=@the-usual:recipes/the-usual.yaml \
-  context='{"task": "describe what to build, or a path to a spec file", "repo_path": "/absolute/path/to/your/git/repo"}'
+  context='{"task": "sanitized initial provenance or a safe specification path", "user_request": "## User Request\n\n### Requested result\n...\n\n### Explicit constraints\n- ...\n\n### Accepted tradeoffs and residuals\n- ...", "repo_path": "/absolute/path/to/your/git/repo"}'
 ```
+
+`user_request` is optional for direct invocation. When it is omitted, the
+recipe conservatively derives the block from a self-contained sanitized task
+or the referenced specification. A merely referential task that does not
+provide enough safe content fails honestly instead of inventing intent. The
+direct caller owns sanitization before invocation; do not put literal
+credentials, private keys, authorization headers, tokens, secrets, or
+sensitive payload values in either field. `task` remains separate provenance
+and never overrides a supplied current request.
 
 ## What you need
 

@@ -34,6 +34,25 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.13.0 (2026-08-15):
+#   - NEW: the parent supplies a sanitized, revision-free current User Request;
+#     the committed plan carries it unchanged to every semantic delegate.
+#   - CHANGED: later user direction is owned by the parent dispatcher, which
+#     uses judgment to update the plan and coordinate only affected work.
+#   - CHANGED: the User Request defines need for KISS/YAGNI scope decisions;
+#     findings and clearance conditions bind, while proposed remedies advise.
+#   - CHANGED: every substantiated finding at every severity remains recorded
+#     and binding until explicitly cleared; bounded review caps end honestly as
+#     FAILED/non-converged when unresolved findings remain.
+#   - BUGFIX: task briefs now parse the plan structure and Markdown fences
+#     deterministically, preserving the complete User Request even when its
+#     content contains literal Goal labels; capped plan-review failure now
+#     reaches recap with an honest, validator-compatible skipped-execution
+#     summary while missing execution evidence after a passing plan fails loud.
+#   - SECURITY: Bash steps receive dynamic paths through environment bindings,
+#     never executable template text; halt diagnostics are fixed and direct
+#     operators to durable logs without exposing agent-produced details.
+#
 # v3.12.0 (2026-08-14):
 #   - CHANGED: Fresh Eyes independence + verdict policy (policy-only port of
 #     skill-the-usual 53b8f04, Seam 2; the shell/transport machinery itself
@@ -413,14 +432,17 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.12.0"
+version: "3.13.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
 context:
   # ---- Required inputs -------------------------------------------------------
-  task: ""            # REQUIRED: the spec/requirements text, OR an absolute path to a spec file.
+  task: ""            # REQUIRED: sanitized non-authoritative initial provenance, a safe specification locator, or a self-contained sanitized direct-invocation fallback.
   repo_path: ""       # REQUIRED: absolute path to the target git repository.
+
+  # ---- Optional current intent -----------------------------------------------
+  user_request: ""    # OPTIONAL: complete sanitized Markdown block supplied by the parent; when present it is authoritative over task.
 
   # ---- Optional inputs (cross-model reviewer; must differ from executor) ------
   reviewer_provider: "openai"   # executor is Anthropic -> reviewer defaults to a different family (GPT)
@@ -742,6 +764,57 @@ steps:
       summaries; read specific report sections only when needed (bounded
       reads), never whole reports by reflex.
 
+      CURRENT USER REQUEST:
+      The optional `user_request` input below is a complete sanitized Markdown
+      block supplied by the parent that owns the full conversation:
+
+      ---------- BEGIN SUPPLIED USER REQUEST ----------
+      {{user_request}}
+      ---------- END SUPPLIED USER REQUEST ----------
+
+      If it is non-empty, treat it as user-owned and authoritative. Insert the
+      supplied User Request block unchanged exactly once in the plan,
+      immediately before the planner-owned ## Goal. Do not summarize, filter,
+      reinterpret, or add planner choices to it. Planning explorers receive the
+      complete current User Request block verbatim, along with one bounded
+      exploration topic; they do not receive a relevance-filtered subset.
+
+      If `user_request` is empty, this is the specification fallback for direct
+      invocation. Derive the exact revision-free block below conservatively
+      from the self-contained sanitized task or the safe specification file it
+      names. A direct caller owns pre-invocation sanitization; do not claim that
+      the recipe could sanitize values before receiving them.
+
+      ## User Request
+
+      ### Requested result
+      <compact standalone current result>
+
+      ### Explicit constraints
+      - <only constraints explicitly stated or adopted>
+      - None stated.
+
+      ### Accepted tradeoffs and residuals
+      - <only tradeoffs or residuals explicitly accepted>
+      - None stated.
+
+      Omit bare workflow activation such as "use the usual." Resolve no missing
+      conversation context: if the fallback is referential (`do that`,
+      `option 2`, or equivalent) and the sanitized task/spec does not establish
+      its referent, fails honestly without creating or committing a plan rather
+      than guessing. `task` is sanitized task provenance or a safe specification
+      locator and task never overrides the supplied current User Request.
+
+      The plan is the sole durable carrier of the current User Request after it
+      is committed. Do not create a separate request artifact or add revision,
+      timestamp, history, or amendment-log metadata to the block. Preserve the
+      block unchanged through every plan mutation.
+
+      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
+
+      KISS governs how the User Request is satisfied, and YAGNI limits new work
+      to capabilities required by the User Request.
+
       Write the implementation plan for this task by following the methodology
       below EXACTLY. It is the user's writing-plans discipline, inlined in full.
 
@@ -761,8 +834,10 @@ steps:
       Do not print any other banners in this step (commits and bookkeeping are
       not announced).
 
-      Task/spec: {{task}}
-      (If `task` is an absolute path to a file, read that file for the full spec.)
+      Initial sanitized task provenance / safe specification locator: {{task}}
+      (If `task` is an absolute path to a file, read that file only for the
+      direct-invocation fallback and supporting context. It never overrides the
+      current User Request.)
       Work inside the worktree: {{workspace.worktree_path}}
 
       ==================== WRITING PLANS (METHODOLOGY) ====================
@@ -844,6 +919,9 @@ steps:
       > workflow's execute stage: a fresh implementer per task, with a spec +
       > quality review after each task. Steps use checkbox (`- [ ]`) syntax
       > for tracking.
+
+      [Insert the complete current `## User Request` block here unchanged
+      exactly once. It is user-owned, not planner-owned.]
 
       **Goal:** [One sentence describing what this builds]
 
@@ -990,6 +1068,9 @@ steps:
       - COMMIT the plan to the worktree branch (the fresheyes review stage only
         reviews committed work). Use a focused commit message, e.g.
         "docs: add implementation plan for <slug>".
+      - Before committing, verify the complete current User Request block
+        appears unchanged exactly once and immediately before the planner-owned
+        Goal/Architecture/Tech Stack/Global Constraints fields.
 
       Return ONLY a JSON object (no prose, no fences) with exactly:
       {
@@ -1010,6 +1091,8 @@ steps:
     type: "bash"
     output: "plan"
     parse_json: true
+    env:
+      LOGS_DIR: "{{workspace.logs_dir}}"
     command: |
       plan_ok() {
         [ -s "$1" ] || return 1
@@ -1019,13 +1102,13 @@ steps:
           *) return 1 ;;
         esac
       }
-      if plan_ok "{{workspace.logs_dir}}/write-plan-result.json"; then
-        cat "{{workspace.logs_dir}}/write-plan-result.json"
-      elif plan_ok "{{workspace.logs_dir}}/pending-output.json"; then
-        echo "WARNING: write-plan-result.json missing or invalid; using pending-output.json anchor" >&2
-        cat "{{workspace.logs_dir}}/pending-output.json"
+      if plan_ok "$LOGS_DIR/write-plan-result.json"; then
+        cat -- "$LOGS_DIR/write-plan-result.json"
+      elif plan_ok "$LOGS_DIR/pending-output.json"; then
+        printf '%s\n' "WARNING: write-plan-result.json missing or invalid; using pending-output.json anchor" >&2
+        cat -- "$LOGS_DIR/pending-output.json"
       else
-        echo "FATAL: write-plan output lost or invalid (no result file or anchor whose plan_path points at a real file). Cannot continue without a plan." >&2
+        printf '%s\n' "FATAL: write-plan output lost or invalid (no result file or anchor whose plan_path points at a real file). Cannot continue without a plan." >&2
         exit 1
       fi
 
@@ -1128,6 +1211,24 @@ steps:
       Plan under review: {{plan.plan_path}}
       Worktree:          {{workspace.worktree_path}}
       Logs dir:          {{workspace.logs_dir}}
+
+      At the start of this stage and before every semantic delegation, re-read
+      the committed plan and extract its complete current `## User Request`
+      block. The parent may have updated that block or relevant planning
+      documents after a blocking call returned or was interrupted; the current
+      plan, not initial recipe context, governs. Finder receive the complete
+      current User Request block verbatim. Strategist receive the complete
+      current User Request block verbatim. Validators receive the complete
+      current User Request block verbatim. Include it without summary or
+      relevance filtering in each role's otherwise bounded instruction.
+
+      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
+
+      KISS governs how the User Request is satisfied, and YAGNI limits new work
+      to capabilities required by the User Request. Findings bind; reviewer
+      remedies advise. Evidence and clearance conditions are binding technical
+      input; the load-bearing stage chooses the proportionate plan response
+      within the current User Request.
 
       Amplifier translation of the subagent mechanics (applies throughout):
       - File-report pattern (appended to every dispatch, on top of each
@@ -1368,6 +1469,9 @@ steps:
       ```
       You are finding the load-bearing assumptions in a plan. Think as hard as you can.
 
+      CURRENT USER REQUEST (complete block, verbatim from the committed plan):
+      [paste the complete current User Request block]
+
       GOAL: [restate the goal in 1-2 sentences]
 
       PLAN / INTENDED APPROACH:
@@ -1417,6 +1521,9 @@ steps:
 
       ```
       You are assigning each assumption the best way to VALIDATE it. Think as hard as you can.
+
+      CURRENT USER REQUEST (complete block, verbatim from the committed plan):
+      [paste the complete current User Request block]
 
       ASSUMPTIONS (reviewed list):
       [paste the ledger claims + decision controlled + current evidence/uncertainty + late-falsification cost]
@@ -1474,6 +1581,9 @@ steps:
       ```
       Validate the assigned assumption(s) and report back. Think rigorously; do not rubber-stamp them.
 
+      CURRENT USER REQUEST (complete block, verbatim from the committed plan):
+      [paste the complete current User Request block]
+
       ASSUMPTION(S) (claim(s) to test):
       [ID: exact falsifiable claim]
 
@@ -1515,7 +1625,8 @@ steps:
         updating {{plan.plan_path}}. Re-run the writing-plans Self-Review (from
         Step 1's methodology, incl. item 1b) over any edited tasks. COMMIT the
         plan updates (focused, atomic message). Preserve unrelated changes by
-        other agents.
+        other agents. Preserve the complete current User Request block unchanged
+        exactly once through every plan edit.
       - HALT rule: only halt the whole workflow if a FALSIFIED
         assumption implies real data-loss / corruption / irreversible-damage risk
         that CANNOT be planned around. Ordinary falsified assumptions are fixed
@@ -1588,15 +1699,34 @@ steps:
     type: "bash"
     output: "load_bearing_result"
     parse_json: true
+    env:
+      LOGS_DIR: "{{workspace.logs_dir}}"
     command: |
-      if [ -s "{{workspace.logs_dir}}/load-bearing-result.json" ]; then
-        cat "{{workspace.logs_dir}}/load-bearing-result.json"
-      elif [ -s "{{workspace.logs_dir}}/pending-output.json" ] && grep -q '"halt"' "{{workspace.logs_dir}}/pending-output.json"; then
-        echo "WARNING: load-bearing-result.json missing; using pending-output.json anchor" >&2
-        cat "{{workspace.logs_dir}}/pending-output.json"
+      if [ -s "$LOGS_DIR/load-bearing-result.json" ]; then
+        cat -- "$LOGS_DIR/load-bearing-result.json"
+      elif [ -s "$LOGS_DIR/pending-output.json" ] && grep -q -- '"halt"' "$LOGS_DIR/pending-output.json"; then
+        printf '%s\n' "WARNING: load-bearing-result.json missing; using pending-output.json anchor" >&2
+        cat -- "$LOGS_DIR/pending-output.json"
       else
-        echo "WARNING: load-bearing output lost; substituting safe defaults (halt=false)" >&2
-        echo '{"halt":"false","halt_reason":"","verified_count":-1,"falsified_count":-1,"acceptable_decisions":"UNKNOWN - the load-bearing chat output was lost; consult the ledger file if it exists","ledger_path":"{{workspace.logs_dir}}/load-bearing-ledger.md"}'
+        printf '%s\n' "WARNING: load-bearing output lost; substituting safe defaults (halt=false)" >&2
+      python3 - <<'PY'
+      import json
+      import os
+      from pathlib import Path
+
+      payload = {
+          "halt": "false",
+          "halt_reason": "",
+          "verified_count": -1,
+          "falsified_count": -1,
+          "acceptable_decisions": (
+              "UNKNOWN - the load-bearing chat output was lost; "
+              "consult the ledger file if it exists"
+          ),
+          "ledger_path": str(Path(os.environ["LOGS_DIR"]) / "load-bearing-ledger.md"),
+      }
+      print(json.dumps(payload, separators=(",", ":")))
+      PY
       fi
 
   # ---- Halt guard: fail loudly if load-bearing found unplannable data-loss risk
@@ -1604,9 +1734,9 @@ steps:
     type: "bash"
     condition: "{{load_bearing_result.halt}} == 'true'"
     command: |
-      echo "HALT: load-bearing surfaced a data-loss/corruption risk that cannot be planned around." >&2
-      echo "Reason: {{load_bearing_result.halt_reason}}" >&2
-      echo "See ledger: {{load_bearing_result.ledger_path}}" >&2
+      printf '%s\n' \
+        "HALT: load-bearing surfaced a data-loss/corruption risk that cannot be planned around." \
+        "Inspect the durable load-bearing ledger and logs for details." >&2
       exit 1
     on_error: "fail"
 
@@ -1708,6 +1838,23 @@ steps:
       Plan file: {{plan.plan_path}}
       Logs dir:  {{workspace.logs_dir}}
 
+      Re-read the committed plan now. Extract the complete current
+      `## User Request` block and keep it verbatim for this entire round. The
+      parent may have updated the plan after a prior blocking call returned or
+      was interrupted; current plan content governs. Reviewer receives the
+      complete current User Request block verbatim. Remediation receives the
+      complete current User Request block verbatim. Neither receives a summary
+      or relevance-filtered subset, and every plan edit preserves the block
+      unchanged exactly once.
+
+      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
+
+      KISS governs how the User Request is satisfied, and YAGNI limits new work
+      to capabilities required by the User Request. Findings bind; reviewer
+      remedies advise. The remediation actor chooses the proportionate response
+      within the current User Request while satisfying the finding's clearance
+      condition.
+
       (a) COMMIT FIRST: ensure every change in the worktree is committed —
           fresheyes only reviews committed work. Do not commit anything under the
           logs dir (it lives outside the worktree tree by design).
@@ -1735,6 +1882,9 @@ steps:
 
       Review the plan at {{plan.plan_path}}.
 
+      CURRENT USER REQUEST (complete block, pasted verbatim from the committed plan):
+      [paste the complete current User Request block here]
+
       {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
 
@@ -1745,19 +1895,37 @@ steps:
           CONFLICTING markers in one report, or a review the judge said it could
           not perform => NOT passed.
 
-      (d) APPEND this iteration's outcome to
-          `{{workspace.logs_dir}}/fresheyes-plan.md` — record the verdict, the
-          blocking issues (severity + file:line + description), the reviewer's
-          summary, and the reviewer identity label actually used
-          ({{reviewer_provider}}/{{reviewer_model}}, or the override in force)
-          — for the recap stage.
+      (d) DURABLY RECORD EVERY SEVERITY in
+          `{{workspace.logs_dir}}/fresheyes-plan.md`. For every Critical,
+          Major, Minor, and Nit finding record severity, location, description,
+          assessment (`substantiated` or `unsubstantiated`), disposition/status,
+          and clearing evidence. Also record the raw verdict, reviewer summary,
+          and reviewer identity label actually used
+          ({{reviewer_provider}}/{{reviewer_model}}, or the override in force).
+          Read prior entries first. Unresolved substantiated findings are
+          carried until explicit clearance across context-free rounds; a later
+          PASSED cannot erase prior unresolved findings.
 
-      (e) IF NOT PASSED: fix ONLY the blocking issues the reviewer raised,
-          editing the plan at {{plan.plan_path}} (re-run the writing-plans
-          Self-Review from Step 1's methodology over edited tasks). COMMIT the
-          fixes (focused, atomic). Preserve unrelated changes by other agents.
-          The loop will re-review.
-          IF PASSED: make no further changes.
+      (e) ASSESS EVERY REPORTED FINDING, at every severity. An unsubstantiated
+          disposition requires concrete counter-evidence. Every substantiated
+          finding binds until explicitly marked CLEARED with evidence. Reviewer
+          remedy proposals are advisory technical input, not automatic work
+          authorization.
+          - If the raw verdict is FAILED or NO_MARKER, fix, replace, simplify,
+            or remove the implicated plan work as appropriate; re-run the
+            writing-plans Self-Review over edited tasks, preserve the User
+            Request unchanged, COMMIT focused fixes, and report `passed=false`
+            so the next independent round reviews the result.
+          - If the raw verdict is PASSED, reconcile every current and carried
+            finding explicitly. Minor and Nit findings may clear locally with
+            focused evidence without consuming another independent round.
+          - Set logical `passed=true` only when the raw current report is PASSED
+            and every substantiated current or carried finding is CLEARED.
+
+      The 3-round cap remains bounded as a circuit breaker. If the final round
+      leaves any substantiated finding unresolved, record the plan review as
+      FAILED/non-converged, with no success and no merge recommendation. Never
+      extend the loop merely to chase optional improvements.
 
       Cross-cutting rules (complete as stated):
       - Skill loads are whitelisted: this workflow may load ONLY
@@ -1787,6 +1955,7 @@ steps:
     # The agent that executes this step's instructions (this stage's worker —
     # it acts as the SDD "controller", dispatching implementers and reviewers).
     agent: "the-usual:step-runner"
+    condition: "{{plan_passed}} == 'true'"
     timeout: 864000
     output: "execute_result"
     parse_json: true
@@ -1883,6 +2052,35 @@ steps:
       Plan:     {{plan.plan_path}}
       Worktree: {{workspace.worktree_path}}   (work entirely inside it; never on main/master)
 
+      SIMPLE PLAN-REVIEW GATE: this step runs only when the always-defined
+      `plan_passed` flag is true. A failed/non-converged plan review cannot enter
+      implementation.
+
+      At preflight, before every task, before every fixer/reviewer dispatch, and
+      before final review, re-read the current committed plan and extract its
+      complete `## User Request` block. The parent may have updated that block
+      or relevant documents after a blocking call returned or was interrupted;
+      use the current plan and assess the practical impact rather than trusting
+      initial recipe context. Preserve unaffected valid work.
+
+      Execution preflight receive the complete current User Request block verbatim.
+      Task briefs receive the complete current User Request block verbatim.
+      Implementers receive the complete current User Request block verbatim.
+      Fixers receive the complete current User Request block verbatim.
+      Task reviewers receive the complete current User Request block verbatim.
+      Full-suite fixer receive the complete current User Request block verbatim.
+      Whole-branch reviewer receive the complete current User Request block verbatim.
+      Whole-branch fixer receive the complete current User Request block verbatim.
+      Never substitute a summary, relevance subset, or initial `task` value.
+
+      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
+
+      KISS governs how the User Request is satisfied, and YAGNI limits new work
+      to capabilities required by the User Request. Findings bind; reviewer
+      remedies advise. The responsible controller, implementer, or fixer chooses
+      the proportionate response within the current User Request and established
+      project patterns while satisfying each clearance condition.
+
       Amplifier translation (applies throughout): "dispatch a subagent" = call
       the delegate tool with the filled-in prompt template as the instruction and
       context_depth="none" (fresh subagents never inherit your session context —
@@ -1978,10 +2176,14 @@ steps:
          e. On DONE: generate the review package (bash below) with the recorded
             BASE, then dispatch a task reviewer subagent (task-reviewer template
             below) with the printed path.
-         f. If the reviewer reports spec issues or Critical/Important quality
-            findings: dispatch a fix subagent, then RE-REVIEW (fresh review
-            package). Repeat until approved. Don't skip the re-review.
-         g. Mark task complete in the todo list and the progress ledger.
+         f. Record and assess every reviewer finding at every severity. Every
+            substantiated finding binds until explicitly CLEARED with evidence.
+            Dispatch one fix subagent with all substantiated findings for the
+            task. Re-review after spec/Critical/Important fixes; Minor/Nit may
+            clear locally with focused evidence without another independent
+            dispatch. Never let a later approval erase an unresolved finding.
+         g. Mark the task complete in the todo list and progress ledger only
+            after every substantiated finding is CLEARED.
          h. Count the commits landed since the last full-suite gate:
             `git -C <worktree-root> rev-list --count --no-merges
             <LAST_GATE_HEAD>..HEAD -- ':(exclude,top)docs/plans'`, where
@@ -2120,10 +2322,14 @@ steps:
         paste accumulated prior-task summaries ("state after Tasks 1-3") into
         later dispatches. A fresh subagent needs its task, the interfaces it
         touches, and the global constraints. Nothing else.
-      - Dispatch fix subagents for Critical and Important findings. Record Minor
-        findings in the progress ledger as you go, and point the final
-        whole-branch review at that list so it can triage which must be fixed
-        before merge. A roll-up nobody reads is a silent discard.
+      - Durably record every finding severity in the progress ledger with
+        severity, location, description, assessment, disposition/status, and
+        clearing evidence. Assess every finding as substantiated or
+        unsubstantiated. Every substantiated finding binds until explicitly
+        CLEARED. Dispatch one fix subagent with all substantiated task findings;
+        Minor/Nit may clear locally with focused evidence without another
+        independent dispatch. A later approval cannot erase prior unresolved
+        findings, and a roll-up nobody reads is a silent discard.
       - A finding labeled plan-mandated — or any finding that conflicts with what
         the plan's text requires — is the human's decision, like any plan
         contradiction: present the finding and the plan text (HALT rule below if
@@ -2136,11 +2342,13 @@ steps:
         printed path in the final review dispatch, so the final reviewer reads
         one file instead of re-deriving the branch diff with git commands.
       - Every fix dispatch carries the implementer contract: the fix subagent
-        re-runs the tests covering its change and reports the results. Name the
-        covering test files in the dispatch — a one-line fix does not need the
-        whole suite. Before re-dispatching the reviewer, confirm the fix report
-        contains the covering tests, the command run, and the output; dispatch
-        the re-review once all three are present.
+        receives the complete current User Request block verbatim and the exact
+        approved scope paragraph above, re-runs the tests covering its change,
+        and reports the results. Name the covering test files in the dispatch
+        — a one-line fix does not need the whole suite. Before re-dispatching
+        the reviewer, confirm the fix report contains the covering tests, the
+        command run, and the output; dispatch the re-review once all three are
+        present.
       - If the final whole-branch review returns findings, dispatch ONE fix
         subagent with the complete findings list — not one fixer per finding.
         Per-finding fixers each rebuild context and re-run suites; a real
@@ -2204,22 +2412,179 @@ steps:
 
       ## SDD scratch-file bash (run inside the worktree)
 
-      TASK BRIEF — extract one task's full text from the plan into a file the
-      implementer reads in one call (usage: set PLAN and N first):
+      TASK BRIEF — extract the complete current User Request, Global
+      Constraints, and one task's full text from the plan into a file every
+      implementer, fixer, and task reviewer reads in one call (usage: set PLAN
+      and N first). Task brief order: ## User Request, then ## Global
+      Constraints, then the selected ## Task:
 
       ```bash
       # task-brief: PLAN=<plan file> N=<task number>
       set -euo pipefail
       dir=$(git rev-parse --git-path sdd); mkdir -p "$dir"; dir=$(cd "$dir" && pwd)
       out="$dir/task-${N}-brief.md"
-      awk -v n="$N" '
-        /^```/ { infence = !infence }
-        !infence && /^#+[ \t]+Task[ \t]+[0-9]+/ {
-          intask = ($0 ~ ("^#+[ \t]+Task[ \t]+" n "([^0-9]|$)"))
-        }
-        intask { print }
-      ' "$PLAN" > "$out"
-      [ -s "$out" ] || { echo "task ${N} not found in ${PLAN}" >&2; exit 3; }
+      tmp="$out.tmp"
+      rm -f "$out" "$tmp"
+      export PLAN N out tmp
+      python3 - <<'PY'
+      import os
+      import re
+      import sys
+      from pathlib import Path
+
+      plan_path = Path(os.environ["PLAN"])
+      out_path = Path(os.environ["out"])
+      tmp_path = Path(os.environ["tmp"])
+
+
+      def fail() -> None:
+          for path in (tmp_path, out_path):
+              try:
+                  path.unlink()
+              except FileNotFoundError:
+                  pass
+          print("task brief structure is invalid", file=sys.stderr)
+          raise SystemExit(3)
+
+
+      def outside_fences(lines: list[bytes]) -> list[bool]:
+          outside: list[bool] = []
+          fence_char: str | None = None
+          fence_length = 0
+          for raw_line in lines:
+              text = raw_line.rstrip(b"\r\n").decode("utf-8")
+              if fence_char is not None:
+                  outside.append(False)
+                  closing = re.fullmatch(
+                      rf"[ \t]{{0,3}}{re.escape(fence_char)}"
+                      rf"{{{fence_length},}}[ \t]*",
+                      text,
+                  )
+                  if closing is not None:
+                      fence_char = None
+                      fence_length = 0
+                  continue
+
+              opening = re.match(r"^[ \t]{0,3}(`{3,}|~{3,})(.*)$", text)
+              if opening is None or (
+                  opening.group(1).startswith("`") and "`" in opening.group(2)
+              ):
+                  outside.append(True)
+                  continue
+
+              outside.append(False)
+              fence_char = opening.group(1)[0]
+              fence_length = len(opening.group(1))
+          return outside
+
+
+      try:
+          task_number = int(os.environ["N"])
+          if task_number < 1 or str(task_number) != os.environ["N"]:
+              raise ValueError
+
+          lines = plan_path.read_bytes().splitlines(keepends=True)
+          texts = [line.rstrip(b"\r\n").decode("utf-8") for line in lines]
+          outside = outside_fences(lines)
+
+          def exact(label: str) -> list[int]:
+              return [
+                  index
+                  for index, text in enumerate(texts)
+                  if outside[index] and text == label
+              ]
+
+          user = exact("## User Request")
+          requested = exact("### Requested result")
+          constraints = exact("### Explicit constraints")
+          residuals = exact("### Accepted tradeoffs and residuals")
+          if not all(
+              len(indices) == 1
+              for indices in (user, requested, constraints, residuals)
+          ):
+              raise ValueError
+
+          global_constraints = exact("## Global Constraints")
+          if len(global_constraints) != 1:
+              raise ValueError
+          global_start = global_constraints[0]
+
+          goal_candidates = [
+              index
+              for index, text in enumerate(texts)
+              if outside[index]
+              and index > residuals[0]
+              and index < global_start
+              and re.fullmatch(r"\*\*Goal:\*\*(?:[ \t]+.*)?", text)
+          ]
+          if len(goal_candidates) != 1:
+              raise ValueError
+          goal = goal_candidates[0]
+          if not (
+              user[0]
+              < requested[0]
+              < constraints[0]
+              < residuals[0]
+              < goal
+              < global_start
+          ):
+              raise ValueError
+
+          task_pattern = re.compile(r"^### Task ([0-9]+):(?:.*)$")
+          task_headings: list[tuple[int, int]] = []
+          for index, text in enumerate(texts):
+              if not outside[index]:
+                  continue
+              match = task_pattern.fullmatch(text)
+              if match is not None:
+                  task_headings.append((index, int(match.group(1))))
+
+          real_tasks = [
+              (index, number)
+              for index, number in task_headings
+              if index > global_start
+          ]
+          numbers = [number for _, number in real_tasks]
+          if len(numbers) != len(set(numbers)):
+              raise ValueError
+          selected = [
+              index for index, number in real_tasks if number == task_number
+          ]
+          if len(selected) != 1:
+              raise ValueError
+          task_start = selected[0]
+
+          global_end = task_start
+          for index in range(global_start + 1, task_start):
+              if outside[index] and (
+                  re.fullmatch(r"---[ \t]*", texts[index])
+                  or task_pattern.fullmatch(texts[index]) is not None
+              ):
+                  global_end = index
+                  break
+
+          task_end = len(lines)
+          for index in range(task_start + 1, len(lines)):
+              if not outside[index]:
+                  continue
+              if task_pattern.fullmatch(texts[index]) is not None or re.match(
+                  r"^##(?:[ \t]|$)", texts[index]
+              ):
+                  task_end = index
+                  break
+
+          request_bytes = b"".join(lines[user[0] : goal])
+          constraints_bytes = b"".join(lines[global_start:global_end])
+          task_bytes = b"".join(lines[task_start:task_end])
+          brief = request_bytes + constraints_bytes + task_bytes
+          if not request_bytes or not constraints_bytes or not task_bytes:
+              raise ValueError
+
+          tmp_path.write_bytes(brief)
+          os.replace(tmp_path, out_path)
+      except Exception:
+          fail()
+      PY
       echo "wrote ${out}: $(wc -l < "$out" | tr -d ' ') lines"
       ```
 
@@ -2259,7 +2624,8 @@ steps:
       ## Task Description
 
       Read your task brief first: [BRIEF_FILE]
-      It contains the full task text from the plan.
+      It contains the complete current User Request block verbatim, the Global
+      Constraints, and the full selected task text from the current plan.
 
       ## Context
 
@@ -2286,6 +2652,11 @@ steps:
       6. Report back
 
       Work from: [directory]
+
+      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
+
+      KISS governs how the User Request is satisfied, and YAGNI limits new work
+      to capabilities required by the User Request.
 
       **While you work:** If you encounter something unexpected or unclear, **ask questions**.
       It's always OK to pause and clarify. Don't guess or make assumptions.
@@ -2358,9 +2729,12 @@ steps:
 
       ## After Review Findings
 
-      If a reviewer finds issues and you fix them, re-run the tests that cover
-      the amended code and append the results to your report file. Reviewers
-      will not re-run tests for you — your report is the test evidence.
+      If a reviewer finds issues, assess every reported finding regardless of
+      severity. Every substantiated finding binds until explicitly CLEARED.
+      Reviewer remedies advise; choose a proportionate response within the
+      current User Request. Re-run the tests that cover amended code and append
+      clearing evidence to your report file. Reviewers will not re-run tests
+      for you — your report is the test evidence.
 
       ## Report Format
 
@@ -2407,6 +2781,8 @@ steps:
       ## What Was Requested
 
       Read the task brief: [BRIEF_FILE]
+      It begins with the complete current User Request block verbatim, followed
+      by Global Constraints and the selected task. Judge against all three.
 
       Global constraints from the spec/design that bind this task:
       [GLOBAL_CONSTRAINTS]
@@ -2571,10 +2947,11 @@ steps:
 
       A substantiated blocker stays binding until cleared by evidence or
       re-review. A reviewer's suggested remedy is advisory input, not
-      automatic work authorization: choose a complete, proportionate
-      correction inside the plan and spec's scope and the project's
-      established patterns (KISS, YAGNI). Never silently expand scope, and
-      never clear a blocker by editing or downgrading the finding itself.
+      automatic work authorization: use the current User Request as the
+      definition of need and choose a complete, proportionate correction within
+      it and the project's established patterns (KISS, YAGNI). Never silently
+      expand scope, and never clear a blocker by editing or downgrading the
+      finding itself.
       If nothing compliant clears it, treat the loop as non-converged and
       report that conflict.
 
@@ -2610,10 +2987,11 @@ steps:
          another interacting run.
       3. When remediation is required, fix the complete set of recorded bugs
          as one batch, addressing shared causes first: dispatch ONE fix
-         subagent with the complete failure list (same batching rule as
-         final-review fixes; the fixer verifies each fix with its covering
-         tests and commits). Complete that focused verification and those
-         commits before another full-suite invocation. Do not fix
+         subagent with the complete failure list, the complete current User
+         Request block verbatim, and the approved scope paragraph above (same
+         batching rule as final-review fixes; the fixer verifies each fix with
+         its covering tests and commits). Complete that focused verification
+         and those commits before another full-suite invocation. Do not fix
          ledger-recorded pre-existing failures unless they block the
          feature's verification; leave them recorded for the recap instead.
       4. If the current logical invocation is green excluding ledger-recorded
@@ -2656,10 +3034,14 @@ steps:
       applies fixes there. It has previously corrupted the main checkout when
       loaded from this workflow. `requesting-code-review` is template-only.
       Include the review-package path, the full-suite gate's passing entry
-      from the progress ledger, and the progress ledger's Minor findings list
-      so the reviewer can triage which must be fixed before merge.
-      If it returns findings, dispatch ONE fix subagent with the complete
-      findings list — then re-review.
+      from the progress ledger, every unresolved finding in the progress ledger,
+      and the complete current User Request block verbatim so the reviewer can
+      judge the whole branch against the current request.
+      If it returns findings, durably record and assess every severity. Dispatch
+      ONE fix subagent with all substantiated findings, the complete current
+      User Request block verbatim, and the approved scope paragraph above —
+      then re-review where required. The whole-branch fixer must clear all
+      substantiated findings, not only Critical/Important ones.
 
       ## Red Flags
 
@@ -2682,7 +3064,7 @@ steps:
         is a starting point, not evidence that its weaknesses were chosen
       - Dispatch a task reviewer without a diff file — generate it first
         (review-package bash) and name the printed path in the prompt
-      - Move to next task while the review has open Critical/Important issues
+      - Move to the next task while any substantiated finding remains unresolved
       - Re-dispatch a task the progress ledger already marks complete — check the
         ledger (and `git log`) after any compaction or resume
 
@@ -2737,26 +3119,55 @@ steps:
     type: "bash"
     output: "execute_result"
     parse_json: true
+    condition: "{{plan_passed}} == 'true'"
+    env:
+      LOGS_DIR: "{{workspace.logs_dir}}"
     command: |
-      if [ -s "{{workspace.logs_dir}}/execute-result.json" ]; then
-        cat "{{workspace.logs_dir}}/execute-result.json"
-      elif [ -s "{{workspace.logs_dir}}/pending-output.json" ] && grep -q '"blocked"' "{{workspace.logs_dir}}/pending-output.json"; then
-        echo "WARNING: execute-result.json missing; using pending-output.json anchor" >&2
-        cat "{{workspace.logs_dir}}/pending-output.json"
+      if [ -s "$LOGS_DIR/execute-result.json" ]; then
+        result_file="$LOGS_DIR/execute-result.json"
+      elif [ -s "$LOGS_DIR/pending-output.json" ] && grep -q -- '"blocked"' "$LOGS_DIR/pending-output.json"; then
+        printf '%s\n' "WARNING: execute-result.json missing; using pending-output.json anchor" >&2
+        result_file="$LOGS_DIR/pending-output.json"
       else
-        echo "WARNING: execute output lost; substituting safe defaults (blocked=false)" >&2
-        echo '{"blocked":"false","blocked_reason":"","tasks_completed":-1,"total_tasks":-1,"final_review_verdict":"UNKNOWN - execute chat output was lost; check the worktree branch and progress ledger","execution_notes":"UNKNOWN - execute chat output was lost; the work may still be complete on the branch"}'
+        printf '%s\n' "FATAL: execution output is missing after a passing plan review" >&2
+        exit 1
       fi
+      python3 - "$result_file" <<'PY'
+      import json
+      import sys
+      from pathlib import Path
 
-  # ---- Blocker guard: fail loudly if execution hit a stop-and-ask blocker
+      try:
+          result = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+      except (OSError, json.JSONDecodeError):
+          print("FATAL: execution output is invalid", file=sys.stderr)
+          raise SystemExit(1)
+      if not isinstance(result, dict):
+          print("FATAL: execution output is invalid", file=sys.stderr)
+          raise SystemExit(1)
+      if str(result.get("blocked", "")).lower() == "true":
+          print(
+              "HALT: execution stopped per 'When to Stop and Ask for Help'.",
+              file=sys.stderr,
+          )
+          print(
+              "Inspect the durable execution logs and progress ledger for details.",
+              file=sys.stderr,
+          )
+          raise SystemExit(1)
+      print(json.dumps(result, separators=(",", ":")))
+      PY
+    on_error: "fail"
+
+  # ---- Plan non-convergence summary: implementation was intentionally skipped,
+  # but recap still needs an always-defined, honest execution contract.
   - id: "execute-halt-guard"
     type: "bash"
-    condition: "{{execute_result.blocked}} == 'true'"
+    output: "execute_result"
+    parse_json: true
+    condition: "{{plan_passed}} != 'true'"
     command: |
-      echo "HALT: execution stopped per 'When to Stop and Ask for Help'." >&2
-      echo "Blocker: {{execute_result.blocked_reason}}" >&2
-      exit 1
-    on_error: "fail"
+      echo '{"blocked":"true","blocked_reason":"Plan review did not converge; implementation was skipped.","tasks_completed":0,"total_tasks":0,"final_review_verdict":"NOT_RUN - plan review did not converge","execution_notes":"SKIPPED / NON-CONVERGED: the plan hit its independent-review cap without passing, so implementation did not run."}'
 
   # ===========================================================================
   # STEP 5 — fresheyes on the DELTA (worktree vs original fork; max 5, PASS-early)
@@ -2770,6 +3181,7 @@ steps:
     timeout: 864000
     output: "fresheyes_delta_result"
     parse_json: true
+    condition: "{{plan_passed}} == 'true'"
     while_condition: "{{delta_passed}} != 'true'"
     max_while_iterations: 5
     break_when: "{{delta_passed}} == 'true'"
@@ -2854,6 +3266,22 @@ steps:
       Original fork: {{workspace.base_ref}}
       Logs dir:      {{workspace.logs_dir}}
 
+      Re-read the committed plan now. Extract the complete current
+      `## User Request` block and keep it verbatim for this entire round. The
+      parent may have updated the plan after a prior blocking call returned or
+      was interrupted; current plan content governs. Reviewer receives the
+      complete current User Request block verbatim. Remediation receives the
+      complete current User Request block verbatim. Neither receives a summary
+      or relevance-filtered subset.
+
+      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
+
+      KISS governs how the User Request is satisfied, and YAGNI limits new work
+      to capabilities required by the User Request. Findings bind; reviewer
+      remedies advise. The remediation actor chooses the proportionate response
+      within the current User Request while satisfying each finding's clearance
+      condition.
+
       (a) COMMIT FIRST: ensure all work in the worktree is committed before
           review. Do not commit anything under the logs dir.
 
@@ -2885,6 +3313,9 @@ steps:
 
       Empty-diff sanity check: before concluding there are no changes, run `git -C {{workspace.worktree_path}} rev-parse HEAD` and compare it to {{workspace.base_ref}}. If the SHAs differ but the diff appears empty, your command targeted the wrong directory (not the worktree) — re-run it with the `-C {{workspace.worktree_path}}` flag rather than failing with "no changes found".
 
+      CURRENT USER REQUEST (complete block, pasted verbatim from the committed plan):
+      [paste the complete current User Request block here]
+
       {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
 
@@ -2894,33 +3325,46 @@ steps:
           CONFLICTING markers in one report, or a review that could not be
           performed => NOT passed.
 
-      (d) APPEND this iteration's outcome (verdict, blocking issues with
-          severity + file:line, summary, and the reviewer identity label
-          actually used: {{reviewer_provider}}/{{reviewer_model}} or the
-          override in force) to
-          `{{workspace.logs_dir}}/fresheyes-delta.md` for the recap stage.
+      (d) DURABLY RECORD EVERY SEVERITY in
+          `{{workspace.logs_dir}}/fresheyes-delta.md`. For every Critical,
+          Major, Minor, and Nit finding record severity, location, description,
+          assessment (`substantiated` or `unsubstantiated`),
+          disposition/status, and clearing evidence. Also record the raw
+          verdict, reviewer summary, and reviewer identity label actually used
+          ({{reviewer_provider}}/{{reviewer_model}}, or the override in force).
+          Read prior entries first. Every finding is durably recorded and
+          assessed. Unresolved substantiated findings are carried until explicit
+          clearance across context-free rounds; a later PASSED cannot erase
+          prior unresolved findings.
 
-      (e) IF NOT PASSED: fix ONLY the blocking issues the reviewer raised, in the
-          worktree code. Do not reduce test coverage or skip tests to pass; add/
-          update tests as the review requires. Verify each fix with its focused
-          tests plus any tests the fix could impact -- not the full suite.
-          Preserve unrelated changes by other agents. COMMIT the fixes
-          (focused, atomic). The loop re-reviews.
-          IF PASSED: make no review-driven changes. Then, if any fix commits
-          landed during this delta-review loop (any iteration, per the
-          fresheyes-delta.md log) since the last passing full-suite gate
-          entry, run the full test suite once in the worktree on the current
-          HEAD; it passes when green excluding the progress ledger's recorded
-          pre-existing failures:
-          - If it passes (or no loop fix commits exist): append the evidence
-            to {{workspace.logs_dir}}/fresheyes-delta.md and report
-            passed=true per rule (c).
-          - If it fails: record every new failure, fix them all, verify each
-            fix with its covering tests, COMMIT, append the outcome to
-            fresheyes-delta.md, and -- overriding rule (c) for this one case --
-            report passed=false (keep verdict as the reviewer's PASSED) with a
-            summary noting full-suite failures were fixed and the new commits
-            need re-review. The loop re-reviews them.
+      (e) ASSESS EVERY REPORTED FINDING, at every severity. An unsubstantiated
+          disposition requires concrete counter-evidence. Every substantiated
+          finding binds until explicitly marked CLEARED with evidence. Reviewer
+          remedy proposals are advisory technical input, not automatic work
+          authorization.
+          - If the raw verdict is FAILED or NO_MARKER, fix, replace, simplify,
+            or remove the implicated work as appropriate. Do not reduce test
+            coverage or skip tests to pass. Verify every change with focused
+            and impacted tests, preserve unrelated work, COMMIT focused fixes,
+            and report `passed=false` so the next independent round reviews the
+            result.
+          - If the raw verdict is PASSED, reconcile every current and carried
+            finding explicitly. Minor and Nit findings may clear locally with
+            focused evidence without consuming another independent round.
+          - Set logical `passed=true` only when the raw current report is PASSED
+            and every substantiated current or carried finding is CLEARED.
+          - Before reporting `passed=true`, if any fix commits landed during
+            this delta-review loop since the last passing full-suite gate entry,
+            run the full test suite once on current HEAD. If it is not green
+            excluding ledger-recorded pre-existing failures, record and fix the
+            complete failure set, verify and COMMIT the fixes, append the
+            outcome, and report `passed=false` so those commits are re-reviewed.
+
+      The 3-round plan and 5-round delta caps remain bounded circuit breakers.
+      If the fifth delta round leaves any substantiated finding unresolved,
+      record the delta review as FAILED/non-converged, with no success and no
+      merge recommendation. Never extend the loop merely to chase optional
+      improvements.
 
       Cross-cutting rules (complete as stated):
       - Skill loads are whitelisted: this workflow may load ONLY
@@ -2958,6 +3402,11 @@ steps:
       what was found at each stage, then a low-jargon summary of everything that
       was built, plus suggested next steps.
 
+      Re-read the current committed plan before writing. Recap receives the
+      complete current User Request block verbatim and compares the delivered
+      result, constraints, accepted tradeoffs, and residuals against it. Do not
+      reconstruct current intent from the initial recipe `task` or stale context.
+
       Progress banners: do NOT print a progress banner for this step — the
       recap itself IS the output.
 
@@ -2978,8 +3427,10 @@ steps:
         original fork point: {{workspace.base_ref}}; plan: {{plan.plan_path}}.
 
       Note if either fresheyes loop hit its iteration cap WITHOUT passing (plan
-      cap 3, delta cap 5) — that means it exited on the cap, not a clean PASS,
-      and the user should look closer.
+      cap 3, delta cap 5) — that means it exited FAILED/non-converged, not a
+      clean PASS. List every unresolved substantiated finding carried in the
+      durable review logs. No success and no merge recommendation are permitted
+      while any such finding remains unresolved.
 
       Write the recap as plain, low-jargon prose (the user reads these to decide
       what to do next — favor clarity over ceremony). Structure it as:
@@ -2992,7 +3443,7 @@ steps:
         presented as decisions made during the run, not items awaiting the
         user's adjudication.
       - Plan review (fresheyes): how many rounds, final verdict, notable
-        blockers fixed.
+        findings cleared, and every unresolved substantiated finding.
       - Execution: what was built, final review verdict, any concerns. State
         "N of M tasks completed" (N = tasks_completed, M = total_tasks). If
         N < M, visually flag the partial completion on its own line (e.g.
@@ -3002,7 +3453,7 @@ steps:
         failures left unfixed. Read the entries from the progress ledger:
         `(cd {{workspace.worktree_path}} && cat "$(git rev-parse --git-path sdd)/progress.md")`.
       - Delta review (fresheyes): how many rounds, final verdict, notable
-        blockers fixed.
+        findings cleared, and every unresolved substantiated finding.
 
       ## In plain terms, here's what got built
       <a short, jargon-free paragraph a non-specialist could follow>
@@ -3019,12 +3470,13 @@ steps:
 
         !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         !!! WARNING: THE FINAL CODE DID NOT PASS INDEPENDENT REVIEW
-        !!! after all review attempts. Remaining blocking issues:
+        !!! after all review attempts. Remaining unresolved findings:
         !!! - <issue 1>
         !!! - <issue 2>
         !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 
-        Read the remaining blocking issues from the FINAL iteration's entry in
+        Read every unresolved substantiated finding, including carried findings
+        from earlier iterations, from
         {{workspace.logs_dir}}/fresheyes-delta.md and describe EACH one in a
         single line of plain language a non-programmer can follow (what is
         wrong and what it could affect — no jargon). One line per issue.
@@ -3057,10 +3509,14 @@ steps:
         requires 0 rounds, every other verdict at least 1.
       - head_commit_sha: `git -C {{workspace.worktree_path}} rev-parse HEAD`
         (full lowercase 40-char SHA).
-      - status "success" requires completed == total, gate result passed, and
-        both verdicts PASSED, with reason null. Anything else is status
-        "non-convergence" with a non-empty reason naming the partial, blocked,
-        failed-gate, or failed-review fact. schema_version is the integer 1.
+      - status "success" requires completed == total, gate result passed, both
+        final logical verdicts PASSED, and no unresolved substantiated finding
+        in either durable review log, with reason null. A raw PASSED marker does
+        not satisfy this while a carried finding remains unresolved. Anything
+        else is status "non-convergence" with a non-empty reason naming the
+        partial, blocked, failed-gate, failed-review, or unresolved-finding fact.
+        Keep the existing Outcome Block schema unchanged. schema_version is the
+        integer 1.
 
       {
         "schema_version": 1,
@@ -3094,17 +3550,21 @@ steps:
   # check against the recap file on disk.
   - id: "recap-outcome-validate"
     type: "bash"
+    # Contract target: {{workspace.logs_dir}}/recap.md. The env binding carries
+    # the dynamic base path as inert data rather than shell source.
+    env:
+      LOGS_DIR: "{{workspace.logs_dir}}"
     command: |
       BUNDLE_DIR="${THE_USUAL_BUNDLE_DIR:-}"
       if [ -z "$BUNDLE_DIR" ]; then
         BUNDLE_DIR="$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.amplifier/registry.json")))["bundles"]["the-usual"]["local_path"])')" || {
-          echo "FATAL: cannot locate the the-usual bundle (set THE_USUAL_BUNDLE_DIR or register the bundle in ~/.amplifier/registry.json)" >&2
+          printf '%s\n' "FATAL: cannot locate the the-usual bundle (set THE_USUAL_BUNDLE_DIR or register the bundle in ~/.amplifier/registry.json)" >&2
           exit 1
         }
       fi
       VALIDATOR="$BUNDLE_DIR/scripts/validate-recap-outcome.py"
-      [ -f "$VALIDATOR" ] || { echo "FATAL: validator not found at $VALIDATOR" >&2; exit 1; }
-      RECAP="{{workspace.logs_dir}}/recap.md"
-      [ -f "$RECAP" ] || { echo "FATAL: recap file missing at $RECAP — the recap step must write it" >&2; exit 1; }
+      [ -f "$VALIDATOR" ] || { printf '%s\n' "FATAL: recap validator is unavailable" >&2; exit 1; }
+      RECAP="$LOGS_DIR/recap.md"
+      [ -f "$RECAP" ] || { printf '%s\n' "FATAL: recap file is missing; the recap step must write it" >&2; exit 1; }
       python3 "$VALIDATOR" "$RECAP"
     on_error: "fail"
