@@ -34,6 +34,17 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.13.1 (2026-08-16):
+#   - BUGFIX: recap validator lookup now accepts registry `local_path` values
+#     that identify either the bundle directory or its `bundle.md` manifest.
+#     * ROOT CAUSE: registry fallback treated every `local_path` as a directory,
+#       producing `bundle.md/scripts/validate-recap-outcome.py` for local bundles.
+#     * FIX: resolve an existing file-form location to its parent before locating
+#       the validator, while preserving THE_USUAL_BUNDLE_DIR precedence.
+#     * RESULT: recap self-validation and the terminal hard gate find the
+#       validator for both registry forms and still fail closed at the resolved
+#       validator path when it is absent.
+#
 # v3.13.0 (2026-08-15):
 #   - NEW: the parent supplies a sanitized, revision-free current User Request;
 #     the committed plan carries it unchanged to every semantic delegate.
@@ -432,7 +443,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.13.0"
+version: "3.13.1"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -3535,11 +3546,18 @@ steps:
       the validator exits 0 (a validation failure is a failed recap — correct
       the block from the recorded artifacts, never weaken the check):
 
-      BUNDLE_DIR="${THE_USUAL_BUNDLE_DIR:-}"
-      if [ -z "$BUNDLE_DIR" ]; then
-        BUNDLE_DIR="$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.amplifier/registry.json")))["bundles"]["the-usual"]["local_path"])')"
+      BUNDLE_LOCATION="${THE_USUAL_BUNDLE_DIR:-}"
+      if [ -z "$BUNDLE_LOCATION" ]; then
+        BUNDLE_LOCATION="$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.amplifier/registry.json"), encoding="utf-8"))["bundles"]["the-usual"]["local_path"])')"
       fi
-      python3 "$BUNDLE_DIR/scripts/validate-recap-outcome.py" "{{workspace.logs_dir}}/recap.md"
+      if [ -f "$BUNDLE_LOCATION" ]; then
+        BUNDLE_DIR="$(dirname -- "$BUNDLE_LOCATION")"
+      else
+        BUNDLE_DIR="$BUNDLE_LOCATION"
+      fi
+      VALIDATOR="$BUNDLE_DIR/scripts/validate-recap-outcome.py"
+      [ -f "$VALIDATOR" ] || { printf '%s\n' "FATAL: recap validator is unavailable at $VALIDATOR" >&2; exit 1; }
+      python3 "$VALIDATOR" "{{workspace.logs_dir}}/recap.md"
 
       Return the full recap as your message text (plain prose including the
       outcome block; no additional JSON framing).
@@ -3555,15 +3573,20 @@ steps:
     env:
       LOGS_DIR: "{{workspace.logs_dir}}"
     command: |
-      BUNDLE_DIR="${THE_USUAL_BUNDLE_DIR:-}"
-      if [ -z "$BUNDLE_DIR" ]; then
-        BUNDLE_DIR="$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.amplifier/registry.json")))["bundles"]["the-usual"]["local_path"])')" || {
+      BUNDLE_LOCATION="${THE_USUAL_BUNDLE_DIR:-}"
+      if [ -z "$BUNDLE_LOCATION" ]; then
+        BUNDLE_LOCATION="$(python3 -c 'import json, os; print(json.load(open(os.path.expanduser("~/.amplifier/registry.json"), encoding="utf-8"))["bundles"]["the-usual"]["local_path"])')" || {
           printf '%s\n' "FATAL: cannot locate the the-usual bundle (set THE_USUAL_BUNDLE_DIR or register the bundle in ~/.amplifier/registry.json)" >&2
           exit 1
         }
       fi
+      if [ -f "$BUNDLE_LOCATION" ]; then
+        BUNDLE_DIR="$(dirname -- "$BUNDLE_LOCATION")"
+      else
+        BUNDLE_DIR="$BUNDLE_LOCATION"
+      fi
       VALIDATOR="$BUNDLE_DIR/scripts/validate-recap-outcome.py"
-      [ -f "$VALIDATOR" ] || { printf '%s\n' "FATAL: recap validator is unavailable" >&2; exit 1; }
+      [ -f "$VALIDATOR" ] || { printf '%s\n' "FATAL: recap validator is unavailable at $VALIDATOR" >&2; exit 1; }
       RECAP="$LOGS_DIR/recap.md"
       [ -f "$RECAP" ] || { printf '%s\n' "FATAL: recap file is missing; the recap step must write it" >&2; exit 1; }
       python3 "$VALIDATOR" "$RECAP"

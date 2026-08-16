@@ -1,4 +1,4 @@
-"""Contract tests for the revision-free User Request flow (v3.13.0)."""
+"""Contract tests for the revision-free User Request flow (v3.13.1)."""
 
 from __future__ import annotations
 
@@ -1252,10 +1252,10 @@ class TestReleaseAndPriorProtections(unittest.TestCase):
     """v3.13 metadata advances without weakening the v3.9-v3.12 gates."""
 
     def test_v313_versions_and_changelog_are_synchronized(self):
-        self.assertEqual("3.13.0", version_of(RECIPE))
-        self.assertEqual("3.13.0", version_of(BUNDLE))
-        self.assertEqual("3.13.0", version_of(BEHAVIOR))
-        self.assertRegex(RECIPE, r"(?m)^# v3\.13\.0 \(")
+        self.assertEqual("3.13.1", version_of(RECIPE))
+        self.assertEqual("3.13.1", version_of(BUNDLE))
+        self.assertEqual("3.13.1", version_of(BEHAVIOR))
+        self.assertRegex(RECIPE, r"(?m)^# v3\.13\.1 \(")
 
     def test_v39_through_v312_protections_remain(self):
         recipe = norm(RECIPE)
