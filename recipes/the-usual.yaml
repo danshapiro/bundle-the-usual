@@ -402,9 +402,9 @@
 #
 # Comments here are stripped before prompts reach agents, so this section is
 # the AUTHOR contract: the durable invariants every step change must preserve.
-# Agent-facing enforcement lives in step prompts; the tripwire test
-# (tests/test_run_contract.py + tests/fixtures/touchpoints.json) fails loudly
-# when either drifts.
+# Agent-facing enforcement lives in step prompts; there is no automated
+# tripwire cross-checking them against this comment block, so treat edits to
+# either as changes to the same contract and update both together.
 #
 # Durable record and layout (adapter: the recipes engine's checkpointing owns
 # interruption state; this contract deliberately does not duplicate it):
@@ -429,13 +429,12 @@
 # and inside plan/spec scope; a blocker is never cleared by editing the finding.
 #
 # Guidance for authors:
-# - HARD STOP and QUESTION touchpoints are exhaustive in
-#   tests/fixtures/touchpoints.json; this recipe has no mid-run QUESTION kind
-#   by design — halts surface to the parent via the *-halt-guard steps.
-# - Never weaken a touchpoint's wording to silence the tripwire test; either
-#   the sentence is load-bearing (keep verbatim, update the fixture if the
-#   words must legitimately change) or the behavior change is real and needs
-#   its own changelog entry.
+# - HARD STOP and QUESTION sentences are load-bearing text; this recipe has
+#   no mid-run QUESTION kind by design — halts surface to the parent via the
+#   *-halt-guard steps.
+# - Never weaken a load-bearing stop/question sentence just to make a change
+#   easier; either the wording must be preserved, or the behavior is
+#   genuinely changing and needs its own changelog entry.
 # - Prohibitions are already-resolved autonomous rules; do not convert them
 #   into runtime questions.
 #
@@ -465,6 +464,15 @@ context:
   # ---- Loop-state flags (managed via update_context; do not set at runtime) ---
   plan_passed: "false"          # set true when the plan clears fresheyes
   delta_passed: "false"         # set true when the delta clears fresheyes
+
+  # ---- Shared scope rule (single canonical definition) ------------------------
+  # Every step below splices this in verbatim, then continues with its own
+  # role-specific application sentence.
+  scope_rule: |-
+    Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
+
+    KISS governs how the User Request is satisfied, and YAGNI limits new work
+    to capabilities required by the User Request.
 
   # ---- Shared fresheyes reviewer prompt (single canonical definition) ---------
   # Steps 3 and 5 splice these around their own scope sentence; the delegated
@@ -821,10 +829,7 @@ steps:
       timestamp, history, or amendment-log metadata to the block. Preserve the
       block unchanged through every plan mutation.
 
-      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
-
-      KISS governs how the User Request is satisfied, and YAGNI limits new work
-      to capabilities required by the User Request.
+      {{scope_rule}}
 
       Write the implementation plan for this task by following the methodology
       below EXACTLY. It is the user's writing-plans discipline, inlined in full.
@@ -1233,10 +1238,7 @@ steps:
       current User Request block verbatim. Include it without summary or
       relevance filtering in each role's otherwise bounded instruction.
 
-      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
-
-      KISS governs how the User Request is satisfied, and YAGNI limits new work
-      to capabilities required by the User Request. Findings bind; reviewer
+      {{scope_rule}} Findings bind; reviewer
       remedies advise. Evidence and clearance conditions are binding technical
       input; the load-bearing stage chooses the proportionate plan response
       within the current User Request.
@@ -1858,10 +1860,7 @@ steps:
       or relevance-filtered subset, and every plan edit preserves the block
       unchanged exactly once.
 
-      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
-
-      KISS governs how the User Request is satisfied, and YAGNI limits new work
-      to capabilities required by the User Request. Findings bind; reviewer
+      {{scope_rule}} Findings bind; reviewer
       remedies advise. The remediation actor chooses the proportionate response
       within the current User Request while satisfying the finding's clearance
       condition.
@@ -2084,10 +2083,7 @@ steps:
       Whole-branch fixer receive the complete current User Request block verbatim.
       Never substitute a summary, relevance subset, or initial `task` value.
 
-      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
-
-      KISS governs how the User Request is satisfied, and YAGNI limits new work
-      to capabilities required by the User Request. Findings bind; reviewer
+      {{scope_rule}} Findings bind; reviewer
       remedies advise. The responsible controller, implementer, or fixer chooses
       the proportionate response within the current User Request and established
       project patterns while satisfying each clearance condition.
@@ -2664,10 +2660,7 @@ steps:
 
       Work from: [directory]
 
-      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
-
-      KISS governs how the User Request is satisfied, and YAGNI limits new work
-      to capabilities required by the User Request.
+      {{scope_rule}}
 
       **While you work:** If you encounter something unexpected or unclear, **ask questions**.
       It's always OK to pause and clarify. Don't guess or make assumptions.
@@ -3285,10 +3278,7 @@ steps:
       complete current User Request block verbatim. Neither receives a summary
       or relevance-filtered subset.
 
-      Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
-
-      KISS governs how the User Request is satisfied, and YAGNI limits new work
-      to capabilities required by the User Request. Findings bind; reviewer
+      {{scope_rule}} Findings bind; reviewer
       remedies advise. The remediation actor chooses the proportionate response
       within the current User Request while satisfying each finding's clearance
       condition.
