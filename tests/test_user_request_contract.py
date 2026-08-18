@@ -1,8 +1,15 @@
-"""Contract tests for the revision-free User Request flow (v3.13.1)."""
+"""Behavior tests for the revision-free User Request flow's executable paths.
+
+Only pieces of the User Request contract that are actually executed are
+covered here: task-brief extraction via embedded bash, the terminal
+non-convergence route through the recap validator, and injection safety of
+the dynamic bash bindings. Whether the parent/README/recipe *describe* the
+flow in expected prose is not asserted here — matching expected wording is
+not a behavior test.
+"""
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import re
@@ -15,37 +22,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 RECIPE_PATH = ROOT / "recipes" / "the-usual.yaml"
-INSTRUCTIONS_PATH = ROOT / "context" / "the-usual-instructions.md"
-README_PATH = ROOT / "README.md"
-BUNDLE_PATH = ROOT / "bundle.md"
-BEHAVIOR_PATH = ROOT / "behaviors" / "the-usual.yaml"
-STEP_RUNNER_PATH = ROOT / "agents" / "step-runner.md"
 VALIDATOR_PATH = ROOT / "scripts" / "validate-recap-outcome.py"
 
 RECIPE = RECIPE_PATH.read_text(encoding="utf-8")
-INSTRUCTIONS = INSTRUCTIONS_PATH.read_text(encoding="utf-8")
-README = README_PATH.read_text(encoding="utf-8")
-BUNDLE = BUNDLE_PATH.read_text(encoding="utf-8")
-BEHAVIOR = BEHAVIOR_PATH.read_text(encoding="utf-8")
-
-USER_REQUEST_HEADINGS = (
-    "## User Request",
-    "### Requested result",
-    "### Explicit constraints",
-    "### Accepted tradeoffs and residuals",
-)
-
-APPROVED_SCOPE = (
-    "Use the current User Request as the definition of need. Choose the simplest "
-    "complete plan or remedy that delivers its requested result and explicit "
-    "constraints. Every substantiated finding about the chosen solution must be "
-    "cleared, but it may be cleared by fixing, replacing, simplifying, or removing "
-    "work introduced or materially expanded by the current plan. When that new "
-    "machinery is not necessary to satisfy the User Request, omit or simplify it "
-    "rather than expanding or hardening it. Preserve pre-existing code and behavior "
-    "unless changing them is necessary to satisfy the User Request or clear a "
-    "substantiated blocker to it."
-)
 
 
 def norm(text: str) -> str:
@@ -58,16 +37,6 @@ def step_section(step_id: str) -> str:
     start = RECIPE.index(f'  - id: "{step_id}"')
     nxt = RECIPE.find("\n  - id: ", start + 1)
     return RECIPE[start:] if nxt == -1 else RECIPE[start:nxt]
-
-
-def version_of(text: str) -> str:
-    match = re.search(
-        r'^\s*version:\s*"?(\d+\.\d+\.\d+)"?\s*$',
-        text,
-        re.MULTILINE,
-    )
-    assert match is not None
-    return match.group(1)
 
 
 def embedded_bash_after(marker: str) -> str:
@@ -172,333 +141,6 @@ def condition_allows(section: str, values: dict[str, object]) -> bool:
 TASK_BRIEF_SCRIPT = embedded_bash_after(
     "TASK BRIEF — extract the complete current User Request"
 )
-
-
-class TestParentDispatcherContract(unittest.TestCase):
-    """The interactive parent owns extraction, sanitization, and later judgment."""
-
-    def test_exact_revision_free_block(self):
-        positions = [INSTRUCTIONS.index(heading) for heading in USER_REQUEST_HEADINGS]
-        self.assertEqual(positions, sorted(positions))
-        for heading in USER_REQUEST_HEADINGS:
-            self.assertEqual(INSTRUCTIONS.count(heading), 1, heading)
-        for forbidden_heading in (
-            "### Revision",
-            "### Timestamp",
-            "### History",
-            "### Amendment",
-        ):
-            self.assertNotIn(forbidden_heading, INSTRUCTIONS)
-
-    def test_parent_extracts_current_request_from_full_conversation(self):
-        text = norm(INSTRUCTIONS).lower()
-        for required in (
-            "full conversation",
-            "bare workflow activation",
-            "later explicit direction",
-            "supersedes",
-            "adds",
-            "withdraws",
-            "active obligations",
-            "accepted tradeoffs",
-        ):
-            self.assertIn(required, text)
-
-    def test_parent_sanitizes_values_but_keeps_safe_behavior(self):
-        text = norm(INSTRUCTIONS).lower()
-        for secret_kind in (
-            "literal credentials",
-            "private keys",
-            "authorization headers",
-            "token values",
-            "secret values",
-            "sensitive payloads",
-        ):
-            self.assertIn(secret_kind, text)
-        self.assertIn("safe behavior", text)
-        self.assertIn("references", text)
-        self.assertIn("never log", text)
-
-    def test_invocation_separates_provenance_current_request_and_repo(self):
-        self.assertRegex(INSTRUCTIONS, r'"task":\s*"<[^"]+>"')
-        self.assertRegex(INSTRUCTIONS, r'"user_request":\s*"<[^"]+>"')
-        self.assertRegex(INSTRUCTIONS, r'"repo_path":\s*"<[^"]+>"')
-        self.assertIn("task never overrides", norm(INSTRUCTIONS).lower())
-
-    def test_parent_handles_later_direction_by_judgment(self):
-        text = norm(INSTRUCTIONS).lower()
-        for required in (
-            "update the current user request block",
-            "relevant plan",
-            "assess practical impact",
-            "notify",
-            "redirect",
-            "cancel",
-            "replace",
-            "restart",
-            "reuse",
-            "disregard stale results",
-            "leave agents or work alone",
-            "affected work",
-            "preserve unaffected valid work",
-        ):
-            self.assertIn(required, text)
-
-    def test_blocking_and_resume_limits_are_explicit(self):
-        combined = norm(f"{INSTRUCTIONS}\n{README}").lower()
-        self.assertIn(
-            "after the blocking recipe call returns or is interrupted", combined
-        )
-        self.assertIn("unchanged interruption", combined)
-        self.assertIn('operation="resume"', combined)
-        self.assertIn("rather than an automatic changed-intent continuation", combined)
-
-
-class TestPublicDirectInvocationContract(unittest.TestCase):
-    """README documents direct callers without pretending they have conversation context."""
-
-    def test_optional_user_request_and_conservative_fallback(self):
-        text = norm(README).lower()
-        for required in (
-            "optional",
-            "user_request",
-            "self-contained",
-            "sanitized task",
-            "specification",
-            "fails honestly",
-            "referential",
-        ):
-            self.assertIn(required, text)
-
-    def test_direct_caller_owns_pre_invocation_sanitization(self):
-        text = norm(README).lower()
-        self.assertIn("direct caller", text)
-        self.assertIn("before invocation", text)
-        self.assertIn("sanit", text)
-
-    def test_public_docs_explain_revision_free_current_snapshot(self):
-        text = norm(README).lower()
-        self.assertIn("current snapshot", text)
-        self.assertIn("no revision", text)
-        self.assertIn("git history", text)
-        self.assertIn("changed direction", text)
-        self.assertIn("parent", text)
-
-
-class TestRecipeInputAndPlanContract(unittest.TestCase):
-    """The recipe accepts the current snapshot and makes the plan its carrier."""
-
-    def test_recipe_declares_optional_user_request(self):
-        self.assertRegex(RECIPE, r'(?m)^\s{2}user_request:\s*""')
-        context = RECIPE[RECIPE.index("context:") : RECIPE.index("steps:")]
-        self.assertIn("optional", context.lower())
-
-    def test_recipe_fallback_is_conservative_and_honest(self):
-        text = norm(RECIPE).lower()
-        for required in (
-            "self-contained sanitized task",
-            "specification fallback",
-            "referential",
-            "fails honestly",
-            "direct caller",
-            "pre-invocation sanitization",
-        ):
-            self.assertIn(required, text)
-
-    def test_task_is_provenance_and_never_overrides_current_request(self):
-        text = norm(RECIPE).lower()
-        self.assertIn("sanitized task provenance", text)
-        self.assertIn("task never overrides", text)
-
-    def test_plan_inserts_block_unchanged_once_before_goal(self):
-        plan = norm(step_section("write-plan"))
-        self.assertIn(
-            "insert the supplied user request block unchanged exactly once",
-            plan.lower(),
-        )
-        self.assertIn("immediately before the planner-owned ## Goal", plan)
-
-    def test_plan_has_no_request_revision_metadata(self):
-        lowered = RECIPE.lower()
-        for forbidden in (
-            "user_request_revision",
-            "request_revision",
-            "request_timestamp",
-            "amendment_log",
-            "amendment history",
-        ):
-            self.assertNotIn(forbidden, lowered)
-
-    def test_plan_is_the_sole_durable_carrier(self):
-        self.assertIn("plan is the sole durable carrier", norm(RECIPE).lower())
-        artifact_names = []
-        for path in ROOT.rglob("*"):
-            if not path.is_file() or ".git" in path.parts:
-                continue
-            relative = path.relative_to(ROOT)
-            if relative == Path("tests/test_user_request_contract.py"):
-                continue
-            lowered = relative.as_posix().lower()
-            if "user-request" in lowered or "user_request" in lowered:
-                artifact_names.append(lowered)
-        self.assertEqual([], artifact_names, "new User Request artifact found")
-
-
-class TestCompleteDelegateContext(unittest.TestCase):
-    """Every semantic delegate receives the complete current plan block verbatim."""
-
-    def test_planning_and_load_bearing_delegates(self):
-        write_plan = norm(step_section("write-plan")).lower()
-        self.assertIn(
-            "planning explorers receive the complete current user request block verbatim",
-            write_plan,
-        )
-
-        load_bearing = norm(step_section("load-bearing")).lower()
-        for role in ("finder", "strategist", "validators"):
-            self.assertIn(
-                f"{role} receive the complete current user request block verbatim",
-                load_bearing,
-            )
-
-    def test_plan_review_and_remediation_delegates(self):
-        section = norm(step_section("fresheyes-plan")).lower()
-        for role in ("reviewer", "remediation"):
-            self.assertIn(
-                f"{role} receives the complete current user request block verbatim",
-                section,
-            )
-
-    def test_execution_delegates(self):
-        section = norm(step_section("execute-plan")).lower()
-        for role in (
-            "execution preflight",
-            "task briefs",
-            "implementers",
-            "fixers",
-            "task reviewers",
-            "full-suite fixer",
-            "whole-branch reviewer",
-            "whole-branch fixer",
-        ):
-            self.assertIn(
-                f"{role} receive the complete current user request block verbatim",
-                section,
-            )
-
-    def test_delta_review_and_recap_receive_complete_block(self):
-        delta = norm(step_section("fresheyes-delta")).lower()
-        for role in ("reviewer", "remediation"):
-            self.assertIn(
-                f"{role} receives the complete current user request block verbatim",
-                delta,
-            )
-        self.assertIn(
-            "recap receives the complete current user request block verbatim",
-            norm(step_section("recap")).lower(),
-        )
-
-    def test_task_brief_order(self):
-        section = norm(step_section("execute-plan"))
-        markers = (
-            "Task brief order: ## User Request",
-            "then ## Global Constraints",
-            "then the selected ## Task",
-        )
-        for marker in markers:
-            self.assertIn(marker, section)
-        user_request = section.index(markers[0])
-        constraints = section.index(markers[1], user_request)
-        task = section.index(markers[2], constraints)
-        self.assertLess(user_request, constraints)
-        self.assertLess(constraints, task)
-
-
-class TestScopeAndFindingAuthority(unittest.TestCase):
-    """Scope remains user-defined while every substantiated finding remains binding."""
-
-    def test_exact_scope_paragraph_at_authority_seams(self):
-        approved = norm(APPROVED_SCOPE)
-        for step_id in (
-            "write-plan",
-            "load-bearing",
-            "fresheyes-plan",
-            "execute-plan",
-            "fresheyes-delta",
-        ):
-            self.assertIn(approved, norm(step_section(step_id)), step_id)
-
-    def test_kiss_and_yagni_authority_sentences(self):
-        text = norm(RECIPE)
-        self.assertIn("KISS governs how", text)
-        self.assertIn("YAGNI limits new work", text)
-
-    def test_findings_bind_and_remedies_only_advise(self):
-        text = norm(RECIPE).lower()
-        for required in (
-            "findings bind",
-            "reviewer remedies advise",
-            "every severity",
-            "durably recorded",
-            "assessed",
-            "carried until explicit clearance",
-            "passed cannot erase prior unresolved findings",
-            "minor",
-            "nit",
-            "may clear locally",
-            "caps remain bounded",
-        ):
-            self.assertIn(required, text)
-
-    def test_unresolved_findings_prevent_success(self):
-        text = norm(RECIPE).lower()
-        for required in (
-            "unresolved",
-            "failed",
-            "non-converged",
-            "no success",
-            "no merge",
-        ):
-            self.assertIn(required, text)
-
-
-class TestRejectedMechanismsStayAbsent(unittest.TestCase):
-    """The port stays judgment-based rather than growing continuation machinery."""
-
-    def test_rejected_runtime_contracts_are_absent(self):
-        runtime = f"{RECIPE}\n{INSTRUCTIONS}\n{README}\n{BUNDLE}\n{BEHAVIOR}".lower()
-        for forbidden in (
-            "continuation_manifest",
-            "continuation manifest",
-            "request_hash",
-            "request hash",
-            "request ownership",
-            "continuation ownership",
-            "request ancestry",
-            "transaction journal",
-            "amendment journal",
-            "changed-intent resume protocol",
-            "earliest affected task",
-            "fixed restart algorithm",
-            "fixed invalidation algorithm",
-        ):
-            self.assertNotIn(forbidden, runtime)
-
-    def test_no_standalone_source_runtime_reference(self):
-        runtime = f"{RECIPE}\n{INSTRUCTIONS}\n{README}\n{BUNDLE}\n{BEHAVIOR}".lower()
-        self.assertNotRegex(runtime, r"(?:^|[/\\])skill-the-usual\b")
-        self.assertNotIn("standalone canonical prompt", runtime)
-
-    def test_step_runner_matches_current_head(self):
-        expected = subprocess.run(
-            ["git", "-C", str(ROOT), "show", "HEAD:agents/step-runner.md"],
-            check=True,
-            capture_output=True,
-        ).stdout
-        actual = STEP_RUNNER_PATH.read_bytes()
-        self.assertEqual(
-            hashlib.sha256(expected).digest(), hashlib.sha256(actual).digest()
-        )
 
 
 class TestExecutableRecipeRegressions(unittest.TestCase):
@@ -844,23 +486,6 @@ class TestExecutableRecipeRegressions(unittest.TestCase):
 
     def test_capped_plan_review_has_terminal_nonconvergence_route(self):
         errors = []
-
-        expected_validator = subprocess.run(
-            [
-                "git",
-                "-C",
-                str(ROOT),
-                "show",
-                "HEAD:scripts/validate-recap-outcome.py",
-            ],
-            check=True,
-            capture_output=True,
-        ).stdout
-        if (
-            hashlib.sha256(expected_validator).digest()
-            != hashlib.sha256(VALIDATOR_PATH.read_bytes()).digest()
-        ):
-            errors.append("recap validator schema/script changed from current HEAD")
 
         false_values: dict[str, object] = {
             "plan_passed": "false",
@@ -1246,28 +871,6 @@ class TestExecutableRecipeRegressions(unittest.TestCase):
             )
         if failures:
             self.fail("\n\n".join(failures))
-
-
-class TestReleaseAndPriorProtections(unittest.TestCase):
-    """v3.13 metadata advances without weakening the v3.9-v3.12 gates."""
-
-    def test_v313_versions_and_changelog_are_synchronized(self):
-        self.assertEqual("3.13.1", version_of(RECIPE))
-        self.assertEqual("3.13.1", version_of(BUNDLE))
-        self.assertEqual("3.13.1", version_of(BEHAVIOR))
-        self.assertRegex(RECIPE, r"(?m)^# v3\.13\.1 \(")
-
-    def test_v39_through_v312_protections_remain(self):
-        recipe = norm(RECIPE)
-        for protection in (
-            "Adopt a valid passing result as the current logical invocation",
-            'exactly one "## Outcome Block"',
-            "## Baseline (recorded at workspace setup)",
-            "a same-family selection is rejected, not run",
-            "CONFLICTING markers in one report",
-            "reviewer identity label",
-        ):
-            self.assertIn(protection, recipe)
 
 
 if __name__ == "__main__":

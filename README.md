@@ -125,7 +125,7 @@ and never overrides a supplied current request.
 | `context/the-usual-instructions.md` | Teaches the assistant to recognize "with the usual" |
 | `behaviors/the-usual.yaml` | The hook that loads those instructions into your sessions |
 | `scripts/validate-recap-outcome.py` | The deterministic checker the recap's summary block must pass |
-| `tests/` | Static contract tests guarding the workflow's safety rules and version ledger |
+| `tests/` | Behavior tests: task-brief extraction, the recap validator, injection-safety of dynamic bash bindings, and the full-suite/recap-gate wiring |
 | `bundle.md` | The package definition Amplifier installs |
 
 To run the tests: `python3 -m unittest discover -s tests` (zero dependencies).
