@@ -424,9 +424,11 @@
 # never a moving branch name.
 #
 # Blocker resolution rule (agent-facing copy lives in the execute-plan step):
-# substantiated blockers stay binding until cleared by evidence or re-review;
-# suggested remedies are advisory; corrections stay proportionate (KISS/YAGNI)
-# and inside plan/spec scope; a blocker is never cleared by editing the finding.
+# every substantiated finding stays binding until it reaches a valid final
+# disposition; Critical/Important clear by fix or simplification plus re-review,
+# while Minor/Nit may take the OPTIONAL route; suggested remedies are advisory;
+# corrections stay proportionate (KISS/YAGNI) and inside plan/spec scope; a
+# finding is never resolved by editing the finding.
 #
 # Guidance for authors:
 # - HARD STOP and QUESTION sentences are load-bearing text; this recipe has
@@ -469,7 +471,33 @@ context:
   # Every step below splices this in verbatim, then continues with its own
   # role-specific application sentence.
   scope_rule: |-
-    Use the current User Request as the definition of need. Choose the simplest complete plan or remedy that delivers its requested result and explicit constraints. Every substantiated finding about the chosen solution must be cleared, but it may be cleared by fixing, replacing, simplifying, or removing work introduced or materially expanded by the current plan. When that new machinery is not necessary to satisfy the User Request, omit or simplify it rather than expanding or hardening it. Preserve pre-existing code and behavior unless changing them is necessary to satisfy the User Request or clear a substantiated blocker to it.
+    Use the current User Request as the definition of need. Choose the simplest
+    complete plan or remedy that delivers its requested result and explicit
+    constraints. When new machinery is not necessary to satisfy the User
+    Request, omit or simplify it rather than expanding or hardening it.
+    Preserve pre-existing code and behavior unless changing them is necessary
+    to satisfy the User Request or clear a substantiated blocker to it.
+
+    A reviewer's suggested remedy is advisory; the finding itself is what must
+    be resolved.
+
+    Every substantiated finding is binding: the run may not report success
+    until it reaches a valid final disposition. Binding never requires a fix.
+
+    - CLEARED — fixed, with evidence: corrected, or replaced, simplified, or
+      removed so the finding no longer applies.
+    - UNSUBSTANTIATED — the assessment finds the finding wrong, with the reason
+      recorded.
+    - OUT-OF-SCOPE — available to Major, Minor, and Nit findings. The finding
+      does not block the Requested result or an Explicit constraint. Record a
+      one-line reason; the recap lists it as a suggestion.
+    - OPTIONAL — available only to Minor and Nit findings. Probably a real
+      improvement, but nothing requires it: the finding is in scope but not of
+      sufficient importance. Record a two-sentence reason: one sentence says
+      why it would improve the work, one says why it is not required. The
+      recap lists it; it never blocks anything and may be acted on at any time
+      or never. If a finding could be read as OUT-OF-SCOPE or OPTIONAL, choose
+      OUT-OF-SCOPE.
 
     KISS governs how the User Request is satisfied, and YAGNI limits new work
     to capabilities required by the User Request.
@@ -527,6 +555,8 @@ context:
     - A proposed test or verifier that would fail for the wrong reason, pass vacuously, or fail to check the property it claims to prove is at least **major** and blocking when the plan relies on it as a verification gate.
     - Do not downgrade an executable plan defect because TDD, CI, a future implementer, or a careful reader might notice and fix it later.
     - Passing a plan review is appropriate only when remaining issues are optional refinements that do not change whether the plan can be executed and verified as written.
+    - Code and patch listings in such a document are pre-implementation drafts: their presence is not a defect, and the review must not demand greater code-level detail than the document shows. Judge what is present, not what could be added.
+    - Treat a code-level finding in such a document as critical or major only when the shown code cannot work as written, contradicts repository reality, violates the CURRENT USER REQUEST supplied with this review or an explicit constraint in the document, or breaks an interface a later step consumes. Report other code-level observations as minor or nit; execution and its tests adjudicate them.
 
     ### Related Tests
 
@@ -1016,6 +1046,14 @@ steps:
       - Steps that describe what to do without showing how (code blocks required
         for code steps)
       - References to types, functions, or methods not defined in any task
+
+      Code and patch blocks in the plan are pre-implementation drafts, not a
+      second source of truth. Corrections before execution may revise them.
+      Once execution begins, the source tree supersedes all plan code:
+      execution and review fixes never backport code into the plan, and readers
+      treat plan code as history. Only the plan's prose — the `## User Request`
+      block, Goal, Architecture, Global Constraints, and task intent — remains
+      authoritative after execution.
 
       ## Remember
       - Exact file paths always
@@ -1640,6 +1678,14 @@ steps:
         plan updates (focused, atomic message). Preserve unrelated changes by
         other agents. Preserve the complete current User Request block unchanged
         exactly once through every plan edit.
+      - Corrections record decisions and their consequences: update the affected
+        goal, architecture, constraints, task intent, and any planned code or
+        tests the decision changes. Evidence itself stays out of the plan —
+        commands, observed output, and validated snippets remain in the
+        validator reports, cited by path. Only code a validator actually
+        executed may enter a correction, cited to its report. When a falsified
+        claim invalidates planned code, replace it with the corrected decision
+        and intended behavior — never with freshly authored, unexecuted code.
       - HALT rule: only halt the whole workflow if a FALSIFIED
         assumption implies real data-loss / corruption / irreversible-damage risk
         that CANNOT be planned around. Ordinary falsified assumptions are fixed
@@ -1890,7 +1936,7 @@ steps:
 
       The repository under review is a git worktree at {{workspace.worktree_path}}. Your current working directory may be a DIFFERENT directory, so run every git command as `git -C {{workspace.worktree_path}} ...` (or cd into that path first), and read every repository file (AGENTS.md, README.md, related source) from under that path.
 
-      Review the plan at {{plan.plan_path}}.
+      Review the plan at {{plan.plan_path}}. Code and patch listings in the plan are pre-implementation drafts: their presence is not a defect, and the review never demands deeper code-level detail in the plan. Judge decisions, coverage, and consistency against the User Request.
 
       CURRENT USER REQUEST (complete block, pasted verbatim from the committed plan):
       [paste the complete current User Request block here]
@@ -1918,19 +1964,34 @@ steps:
 
       (e) ASSESS EVERY REPORTED FINDING, at every severity. An unsubstantiated
           disposition requires concrete counter-evidence. Every substantiated
-          finding binds until explicitly marked CLEARED with evidence. Reviewer
-          remedy proposals are advisory technical input, not automatic work
-          authorization.
+          finding remains binding until it reaches a valid final disposition —
+          CLEARED, UNSUBSTANTIATED, OUT-OF-SCOPE, or (Minor and Nit findings
+          only) OPTIONAL — and never use a finding's severity alone to discard
+          it. Reviewer remedy proposals are advisory technical input, not
+          automatic work authorization.
+          - Plan-code bounds: a code-level finding on the plan is blocking only
+            when the shown code cannot work as written, contradicts repository
+            reality, violates the User Request or an explicit constraint, or
+            breaks an interface another task consumes. Stamp any other
+            code-level Minor or Nit finding OPTIONAL by category — execution
+            and its tests adjudicate it. Settle a contested claim that plan
+            code will not work with executed evidence (run a focused check or
+            a load-bearing-style validator), not with opinion, and change the
+            plan's code only on that evidence. A plan fix changes the plan's
+            code minimally to resolve the finding's substance; never polish,
+            beautify, or expand unexecuted code beyond the correction.
           - If the raw verdict is FAILED or NO_MARKER, fix, replace, simplify,
             or remove the implicated plan work as appropriate; re-run the
             writing-plans Self-Review over edited tasks, preserve the User
             Request unchanged, COMMIT focused fixes, and report `passed=false`
             so the next independent round reviews the result.
           - If the raw verdict is PASSED, reconcile every current and carried
-            finding explicitly. Minor and Nit findings may clear locally with
-            focused evidence without consuming another independent round.
+            finding explicitly. Substantiated Minor or Nit findings may reach
+            their final disposition locally with focused evidence, without
+            consuming another independent round.
           - Set logical `passed=true` only when the raw current report is PASSED
-            and every substantiated current or carried finding is CLEARED.
+            and every substantiated current or carried finding has a valid
+            final disposition.
 
       The 3-round cap remains bounded as a circuit breaker. If the final round
       leaves any substantiated finding unresolved, record the plan review as
@@ -2184,13 +2245,15 @@ steps:
             BASE, then dispatch a task reviewer subagent (task-reviewer template
             below) with the printed path.
          f. Record and assess every reviewer finding at every severity. Every
-            substantiated finding binds until explicitly CLEARED with evidence.
-            Dispatch one fix subagent with all substantiated findings for the
-            task. Re-review after spec/Critical/Important fixes; Minor/Nit may
-            clear locally with focused evidence without another independent
-            dispatch. Never let a later approval erase an unresolved finding.
+            substantiated finding remains binding until it reaches a valid
+            final disposition. Dispatch one fix subagent with all substantiated
+            findings for the task that still need fixes. Re-review after
+            spec/Critical/Important fixes; Minor/Nit may reach their final
+            disposition locally with focused evidence, without another
+            independent dispatch. Never let a later approval erase an
+            unresolved finding.
          g. Mark the task complete in the todo list and progress ledger only
-            after every substantiated finding is CLEARED.
+            after every substantiated finding has a valid final disposition.
          h. Count the commits landed since the last full-suite gate:
             `git -C <worktree-root> rev-list --count --no-merges
             <LAST_GATE_HEAD>..HEAD -- ':(exclude,top)docs/plans'`, where
@@ -2332,9 +2395,10 @@ steps:
       - Durably record every finding severity in the progress ledger with
         severity, location, description, assessment, disposition/status, and
         clearing evidence. Assess every finding as substantiated or
-        unsubstantiated. Every substantiated finding binds until explicitly
-        CLEARED. Dispatch one fix subagent with all substantiated task findings;
-        Minor/Nit may clear locally with focused evidence without another
+        unsubstantiated. Every substantiated finding remains binding until it
+        reaches a valid final disposition. Dispatch one fix subagent with all
+        substantiated task findings still needing fixes; Minor/Nit may reach
+        their final disposition locally with focused evidence, without another
         independent dispatch. A later approval cannot erase prior unresolved
         findings, and a roll-up nobody reads is a silent discard.
       - A finding labeled plan-mandated — or any finding that conflicts with what
@@ -2734,10 +2798,10 @@ steps:
       ## After Review Findings
 
       If a reviewer finds issues, assess every reported finding regardless of
-      severity. Every substantiated finding binds until explicitly CLEARED.
-      Reviewer remedies advise; choose a proportionate response within the
-      current User Request. Re-run the tests that cover amended code and append
-      clearing evidence to your report file. Reviewers will not re-run tests
+      severity. Every substantiated finding remains binding until it reaches a
+      valid final disposition. Reviewer remedies advise; choose a proportionate
+      response within the current User Request. Re-run the tests that cover
+      amended code and append clearing evidence to your report file. Reviewers will not re-run tests
       for you — your report is the test evidence.
 
       ## Report Format
@@ -2949,12 +3013,19 @@ steps:
 
       ## Blocker resolution rule
 
-      A substantiated blocker stays binding until cleared by evidence or
-      re-review. A reviewer's suggested remedy is advisory input, not
+      Every substantiated finding remains binding until it reaches a valid
+      final disposition. Clearing a Critical or Important finding means fixing
+      it or simplifying away the machinery it condemns; re-review then verifies
+      the clearing. A Minor or Nit finding may instead be disposed of as
+      UNSUBSTANTIATED with a recorded reason, OUT-OF-SCOPE when it does not
+      block the User Request, or OPTIONAL with a two-sentence reason — one
+      sentence why it would improve the work, one why it is not required; it
+      may be acted on at any time or never and never blocks approval.
+      A reviewer's suggested remedy is advisory input, not
       automatic work authorization: use the current User Request as the
       definition of need and choose a complete, proportionate correction within
       it and the project's established patterns (KISS, YAGNI). Never silently
-      expand scope, and never clear a blocker by editing or downgrading the
+      expand scope, and never resolve a finding by editing or downgrading the
       finding itself.
       If nothing compliant clears it, treat the loop as non-converged and
       report that conflict.
@@ -3340,9 +3411,11 @@ steps:
 
       (e) ASSESS EVERY REPORTED FINDING, at every severity. An unsubstantiated
           disposition requires concrete counter-evidence. Every substantiated
-          finding binds until explicitly marked CLEARED with evidence. Reviewer
-          remedy proposals are advisory technical input, not automatic work
-          authorization.
+          finding remains binding until it reaches a valid final disposition —
+          CLEARED, UNSUBSTANTIATED, OUT-OF-SCOPE, or (Minor and Nit findings
+          only) OPTIONAL — and never use a finding's severity alone to discard
+          it. Reviewer remedy proposals are advisory technical input, not
+          automatic work authorization.
           - If the raw verdict is FAILED or NO_MARKER, fix, replace, simplify,
             or remove the implicated work as appropriate. Do not reduce test
             coverage or skip tests to pass. Verify every change with focused
@@ -3350,10 +3423,12 @@ steps:
             and report `passed=false` so the next independent round reviews the
             result.
           - If the raw verdict is PASSED, reconcile every current and carried
-            finding explicitly. Minor and Nit findings may clear locally with
-            focused evidence without consuming another independent round.
+            finding explicitly. Substantiated Minor or Nit findings may reach
+            their final disposition locally with focused evidence, without
+            consuming another independent round.
           - Set logical `passed=true` only when the raw current report is PASSED
-            and every substantiated current or carried finding is CLEARED.
+            and every substantiated current or carried finding has a valid
+            final disposition.
           - Before reporting `passed=true`, if any fix commits landed during
             this delta-review loop since the last passing full-suite gate entry,
             run the full test suite once on current HEAD. If it is not green
@@ -3407,6 +3482,8 @@ steps:
       complete current User Request block verbatim and compares the delivered
       result, constraints, accepted tradeoffs, and residuals against it. Do not
       reconstruct current intent from the initial recipe `task` or stale context.
+      Never compare the delivered result against the plan's code or patch
+      listings; once execution begins, the source tree supersedes them.
 
       Progress banners: do NOT print a progress banner for this step — the
       recap itself IS the output.
@@ -3459,6 +3536,20 @@ steps:
       ## In plain terms, here's what got built
       <a short, jargon-free paragraph a non-specialist could follow>
 
+      ## Out-of-scope suggestions
+      <List every finding recorded OUT-OF-SCOPE during any review, in plain
+      language with its one-line reason. These are ideas that may be valuable
+      but the run deliberately did not build because the User Request did not
+      require them; they do not block completion or merging. Omit this section
+      when there are none.>
+
+      ## Optional findings
+      <List every finding recorded OPTIONAL during any review, in plain language
+      with its recorded reason for being useful and for why it is only optional.
+      These were probably real improvements that nothing required; they never
+      blocked anything and may be picked up at any time or never. Omit this
+      section when there are none.>
+
       ## Suggested next steps
       <the branch was intentionally NOT merged or finished. Offer the standard
       finishing options — merge the branch locally, push and open a PR, keep
@@ -3490,6 +3581,19 @@ steps:
       - If both passed: no warning block — end normally.
 
       Write the full recap to {{workspace.logs_dir}}/recap.md.
+
+      Close out the plan: when every plan task completed, add one marker line
+      to the committed plan at {{plan.plan_path}}, directly under its title:
+
+      > Executed <YYYY-MM-DD> against <full-sha>; the source tree supersedes all
+      > code and patch listings in this document. Only the `## User Request`
+      > block, Goal, Architecture, Global Constraints, and task intent remain
+      > authoritative.
+
+      <full-sha> is the implementation HEAD before this commit. Commit the
+      marker alone with a focused message. On a partial or non-converged run,
+      omit the marker. Complete this step before reporting head_commit_sha in
+      the Outcome Block below.
 
       ## Outcome Block
 
