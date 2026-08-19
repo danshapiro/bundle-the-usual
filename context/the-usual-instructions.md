@@ -68,3 +68,23 @@ For an unchanged interruption, use
 automatic resume decision. Surface guard messages and await the user's
 decision. `reviewer_provider` / `reviewer_model` remain optional cross-model
 review overrides.
+
+## Unattended Codex stage sessions
+
+Drive standalone-skill stage runs with the machine's default posture — pass no
+approval or sandbox flags:
+
+    codex exec \
+      -C "$WORKTREE" \
+      --add-dir "$LOGS" \
+      -o "$LOGS/<stage>-last-message.md" \
+      - <<'PROMPT'
+    ...
+    PROMPT
+
+This machine's Codex config is already the intended unattended posture
+(`approval_policy = "never"`, `sandbox_mode = "danger-full-access"`): commands
+never prompt, and the cross-provider Fresh Eyes reviewer launches directly.
+Adding an approval-routing flag such as `--approve-for-me` replaces that
+posture with a managed sandbox whose auto-review guardian denies
+cross-provider reviewer launches mid-run — the opposite of unattended.
