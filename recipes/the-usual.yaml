@@ -1092,6 +1092,12 @@ steps:
       block, Goal, Architecture, Global Constraints, and task intent — remains
       authoritative after execution.
 
+      ## Reference, do not repeat
+
+      Do not repeat process that is already documented in the repository. Point
+      to it. If this change diverges from the documented approach, describe only
+      the divergences in prose.
+
       ## Remember
       - Exact file paths always
       - Complete code in every step — if a step changes code, show the code
@@ -1124,6 +1130,9 @@ steps:
       names you used in later tasks match what you defined in earlier tasks? A
       function called `clearLayers()` in Task 3 but `clearFullLayers()` in Task 7
       is a bug.
+
+      **4. Process duplication:** nothing in the plan duplicates process that is
+      already documented in the repository.
 
       If you find issues, fix them inline. No need to re-review — just fix and
       move on. If you find a spec requirement with no task, add the task.
@@ -2049,6 +2058,12 @@ steps:
             writing-plans Self-Review over edited tasks, preserve the User
             Request unchanged, COMMIT focused fixes, and report `passed=false`
             so the next independent round reviews the result.
+          - Before reporting the round for re-review, self-audit only the
+            regions the remediation just edited: every literal, count,
+            cross-reference, and inline command there must stay consistent with
+            the whole artifact and with every file the fix touched. Late-loop
+            findings are typically new inconsistencies introduced by remediation
+            edits, not missed defects in the original work.
           - If the raw verdict is PASSED, reconcile every current and carried
             finding explicitly. Substantiated Minor or Nit findings may reach
             their final disposition locally with focused evidence, without
@@ -3513,6 +3528,12 @@ steps:
             and impacted tests, preserve unrelated work, COMMIT focused fixes,
             and report `passed=false` so the next independent round reviews the
             result.
+          - Before reporting the round for re-review, self-audit only the
+            regions the remediation just edited: every literal, count,
+            cross-reference, and inline command there must stay consistent with
+            the whole artifact and with every file the fix touched. Late-loop
+            findings are typically new inconsistencies introduced by remediation
+            edits, not missed defects in the original work.
           - If the raw verdict is PASSED, reconcile every current and carried
             finding explicitly. Substantiated Minor or Nit findings may reach
             their final disposition locally with focused evidence, without
