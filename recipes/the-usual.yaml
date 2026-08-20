@@ -34,6 +34,26 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.14.0 (2026-08-19):
+#   - NEW: per-stage wall-clock timing (ported from skill-the-usual 2770467,
+#     adapted). Each numbered stage appends `<stage> started|completed
+#     <ISO-8601 UTC>` lines to {{workspace.logs_dir}}/stage-timing.txt —
+#     append-only, `started` is never rewritten on retry/recovery, and the
+#     while-looped review steps stamp once per stage (first round starts it;
+#     the round that ends the loop completes it). The recap renders these into
+#     a new "## Results" table — plain text, columns aligned with spaces:
+#     stage, time, review rounds as `Nx`, and converged/not converged — placed
+#     after "What happened at each stage", plus a one-line **Result:** summary
+#     immediately after the Outcome Block.
+#   - CHANGED (BREAKING for recap consumers): the recap now OPENS with the
+#     "## Outcome Block" heading and its one fenced json object instead of
+#     ending with them — NOTHING may precede the heading. The human-facing
+#     sections and the failure-warning ending are unchanged. The validator's
+#     extract_payload flips from terminal to leading placement with matching
+#     message renames ("missing leading Outcome Block", "outcome block must
+#     come first", "expected one leading json fence"); validator tests and the
+#     user-request contract fixtures move to the leading form.
+#
 # v3.13.1 (2026-08-16):
 #   - BUGFIX: recap validator lookup now accepts registry `local_path` values
 #     that identify either the bundle directory or its `bundle.md` manifest.
@@ -415,7 +435,12 @@
 #   failures or `none`, evidence path). It defines what "pre-existing" means
 #   for the whole run; never rewrite or backfill it.
 # - Logs: {{workspace.logs_dir}} = <repo>/.worktrees/.the-usual-logs/<slug>/ —
-#   outside the tracked tree; receipts, reports, review logs, recap.md.
+#   outside the tracked tree; receipts, reports, review logs, recap.md, and
+#   the stage-timing log.
+# - Stage timing: {{workspace.logs_dir}}/stage-timing.txt — append-only
+#   `<stage> started|completed <ISO-8601 UTC>` lines per numbered stage;
+#   `started` is never rewritten on retry/recovery. The recap renders these
+#   into its Results table.
 # - Compaction anchors: per-run /tmp/the-usual-pending-output.{{session.id}}.json
 #   plus the logs-side result files the collect steps validate.
 #
@@ -444,7 +469,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.13.1"
+version: "3.14.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -794,6 +819,18 @@ steps:
           {{workspace.logs_dir}}/write-plan-result.json (the recipe reads this
           file authoritatively even if your final message is lost or mangled),
           and ALSO make the completed JSON your final message.
+
+      Stage timing (append-only bookkeeping; the recap turns these lines into
+      its Results table). The log is {{workspace.logs_dir}}/stage-timing.txt,
+      one space-separated line per event: `<stage> started|completed
+      <ISO-8601 UTC>` — stamp with `date -u +%FT%TZ`.
+      - As your FIRST action after the anchor setup, append
+        `plan started <ts>` ONLY if the file has no `plan started ` line yet —
+        a retried or recovered attempt keeps the original timestamp.
+      - When this stage's work is verified complete — the committed plan and
+        its artifacts in place and the contract JSON ready — or it exits
+        blocked, append `plan completed <ts>` once.
+      - Never edit, rewrite, or delete existing lines.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -1215,6 +1252,19 @@ steps:
           {{workspace.logs_dir}}/load-bearing-result.json (the recipe reads
           this file authoritatively even if your final message is lost), and
           ALSO make the completed JSON your final message.
+
+      Stage timing (append-only bookkeeping; the recap turns these lines into
+      its Results table). The log is {{workspace.logs_dir}}/stage-timing.txt,
+      one space-separated line per event: `<stage> started|completed
+      <ISO-8601 UTC>` — stamp with `date -u +%FT%TZ`.
+      - As your FIRST action after the anchor setup, append
+        `load-bearing started <ts>` ONLY if the file has no
+        `load-bearing started ` line yet — a retried or recovered attempt
+        keeps the original timestamp.
+      - When this stage's work is verified complete — its ledger and receipt
+        in place and the contract JSON ready — or it exits blocked, append
+        `load-bearing completed <ts>` once.
+      - Never edit, rewrite, or delete existing lines.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -1893,6 +1943,20 @@ steps:
       in this iteration. NOT announced (no extra banners; do not improvise):
       verdict parsing, commits, and plan-fix work.
 
+      Stage timing (append-only bookkeeping; the recap turns these lines into
+      its Results table). The log is {{workspace.logs_dir}}/stage-timing.txt,
+      one space-separated line per event: `<stage> started|completed
+      <ISO-8601 UTC>` — stamp with `date -u +%FT%TZ`.
+      - As your FIRST action after the anchor setup, append
+        `plan-review started <ts>` ONLY if the file has no
+        `plan-review started ` line yet — the while-loop re-enters this step
+        each round and a retried or recovered attempt keeps the original
+        timestamp.
+      - Append `plan-review completed <ts>` once, at the end of the round
+        that ENDS the loop for this run: a round that records PASSED, or the
+        final allowed round (round 3). Never between rounds.
+      - Never edit, rewrite, or delete existing lines.
+
       Worktree:  {{workspace.worktree_path}}
       Plan file: {{plan.plan_path}}
       Logs dir:  {{workspace.logs_dir}}
@@ -2071,6 +2135,19 @@ steps:
           {{workspace.logs_dir}}/execute-result.json (the recipe reads this
           file authoritatively even if your final message is lost), and ALSO
           make the completed JSON your final message.
+
+      Stage timing (append-only bookkeeping; the recap turns these lines into
+      its Results table). The log is {{workspace.logs_dir}}/stage-timing.txt,
+      one space-separated line per event: `<stage> started|completed
+      <ISO-8601 UTC>` — stamp with `date -u +%FT%TZ`.
+      - As your FIRST action after the anchor setup, append
+        `execution started <ts>` ONLY if the file has no `execution started `
+        line yet — a retried or recovered attempt keeps the original
+        timestamp.
+      - When this stage's work is verified complete — every dispatched task
+        settled, the contract JSON ready — or it exits blocked, append
+        `execution completed <ts>` once.
+      - Never edit, rewrite, or delete existing lines.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -3337,6 +3414,20 @@ steps:
       in this iteration. NOT announced (no extra banners; do not improvise):
       verdict parsing, commits, and fix work.
 
+      Stage timing (append-only bookkeeping; the recap turns these lines into
+      its Results table). The log is {{workspace.logs_dir}}/stage-timing.txt,
+      one space-separated line per event: `<stage> started|completed
+      <ISO-8601 UTC>` — stamp with `date -u +%FT%TZ`.
+      - As your FIRST action after the anchor setup, append
+        `delta-review started <ts>` ONLY if the file has no
+        `delta-review started ` line yet — the while-loop re-enters this step
+        each round and a retried or recovered attempt keeps the original
+        timestamp.
+      - Append `delta-review completed <ts>` once, at the end of the round
+        that ENDS the loop for this run: a round that records PASSED, or the
+        final allowed round (round 5). Never between rounds.
+      - Never edit, rewrite, or delete existing lines.
+
       Worktree:      {{workspace.worktree_path}}
       Original fork: {{workspace.base_ref}}
       Logs dir:      {{workspace.logs_dir}}
@@ -3488,7 +3579,17 @@ steps:
       Progress banners: do NOT print a progress banner for this step — the
       recap itself IS the output.
 
+      Stage timing (append-only bookkeeping): the log is
+      {{workspace.logs_dir}}/stage-timing.txt, one space-separated line per
+      event: `<stage> started|completed <ISO-8601 UTC>` — stamp with
+      `date -u +%FT%TZ`. As your FIRST action, append `recap started <ts>`
+      ONLY if the file has no `recap started ` line yet — a retried or
+      recovered attempt keeps the original timestamp. Just BEFORE writing
+      recap.md, append `recap completed <ts>` once, then compute the Results
+      table below from the complete log, so it includes this stage.
+
       Gather the record from context and the log files (read them):
+      - Stage-timing log:       {{workspace.logs_dir}}/stage-timing.txt
       - Load-bearing ledger:  {{load_bearing_result.ledger_path}}
         (verified: {{load_bearing_result.verified_count}}, falsified:
         {{load_bearing_result.falsified_count}}; acceptable-path decisions:
@@ -3511,7 +3612,16 @@ steps:
       while any such finding remains unresolved.
 
       Write the recap as plain, low-jargon prose (the user reads these to decide
-      what to do next — favor clarity over ceremony). Structure it as:
+      what to do next — favor clarity over ceremony). The recap OPENS with the
+      Outcome Block specified at the end of these instructions: exactly one
+      "## Outcome Block" heading followed by its one fenced json object, with
+      NOTHING before that heading. Immediately after its closing fence, write
+      one result line:
+
+      **Result:** <success or non-convergence>; <one short plain-language phrase
+      giving the task count and review verdicts>
+
+      and then the following sections in order:
 
       ## What happened at each stage
       - Plan: <1-2 lines>
@@ -3532,6 +3642,30 @@ steps:
         `(cd {{workspace.worktree_path}} && cat "$(git rev-parse --git-path sdd)/progress.md")`.
       - Delta review (fresheyes): how many rounds, final verdict, notable
         findings cleared, and every unresolved substantiated finding.
+
+      ## Results
+      <Compute each stage's elapsed wall-clock time from its `started` and
+      `completed` lines in the stage-timing log, and total the stages. Show
+      hours and minutes (`47m`, `2h 14m`; under a minute, `<1m`). A stage with
+      no `started` line shows `—`; a stage with `started` but no `completed`
+      shows `incomplete`. These spans include time spent waiting on reviewers
+      and delegated agents.
+
+      The Rounds and Verdict columns apply only to the two fresheyes loops;
+      every other stage shows `—`. Rounds is the recorded review round count
+      with an `x` suffix (`2x`, `3x`); Verdict is `converged` when the loop
+      ended PASSED and `not converged` otherwise. Format the table as plain
+      text, columns aligned with spaces, inside a fenced block, e.g.:
+
+      Stage          Time     Rounds  Verdict
+      Plan           23m      —       —
+      Load-bearing   41m      —       —
+      Plan review    58m      2x      converged
+      Execution      2h 14m   —       —
+      Delta review   1h 36m   3x      converged
+      Recap          2m       —       —
+      Total          5h 54m
+      >
 
       ## In plain terms, here's what got built
       <a short, jargon-free paragraph a non-specialist could follow>
@@ -3593,15 +3727,15 @@ steps:
       <full-sha> is the implementation HEAD before this commit. Commit the
       marker alone with a focused message. On a partial or non-converged run,
       omit the marker. Complete this step before reporting head_commit_sha in
-      the Outcome Block below.
+      the Outcome Block.
 
       ## Outcome Block
 
-      Sole machine-readable exception to the rule that a failure warning ends
-      the recap: keep every human-facing section and the warning behavior
-      above unchanged, then end the recap with exactly one "## Outcome Block"
-      heading and one fenced json object. NOTHING may follow its closing
-      fence. Copy every value from the recorded artifacts — invent nothing:
+      The recap OPENS with exactly one "## Outcome Block" heading and one
+      fenced json object: NOTHING may precede the heading, and the schema
+      below is unchanged. The human-facing sections follow its closing fence,
+      and the failure-warning rule above still governs how the recap ENDS.
+      Copy every value from the recorded artifacts — invent nothing:
 
       - execution_tasks: completed={{execute_result.tasks_completed}},
         total={{execute_result.total_tasks}}

@@ -27,10 +27,9 @@ VALID_PAYLOAD = {
 
 def recap(payload: object) -> str:
     return (
-        "# Recap\n\nHuman-facing content.\n\n"
         "## Outcome Block\n\n```json\n"
         + json.dumps(payload, indent=2)
-        + "\n```\n"
+        + "\n```\n\n# Recap\n\nHuman-facing content.\n"
     )
 
 
@@ -62,7 +61,7 @@ class RecapOutcomeValidatorTest(unittest.TestCase):
         self.assertEqual(result.stdout, "")
 
     def test_rejects_missing_outcome_block(self) -> None:
-        self.assert_invalid("# Recap\n\nHuman-facing content.\n", "missing terminal Outcome Block")
+        self.assert_invalid("# Recap\n\nHuman-facing content.\n", "missing leading Outcome Block")
 
     def test_rejects_missing_required_field(self) -> None:
         payload = deepcopy(VALID_PAYLOAD)
@@ -70,8 +69,8 @@ class RecapOutcomeValidatorTest(unittest.TestCase):
         self.assert_invalid(recap(payload), "missing required field: head_commit_sha")
 
     def test_rejects_malformed_structure(self) -> None:
-        document = "# Recap\n\n## Outcome Block\n\n```yaml\n{broken\n```\n"
-        self.assert_invalid(document, "expected one terminal json fence")
+        document = "## Outcome Block\n\n```yaml\n{broken\n```\n"
+        self.assert_invalid(document, "expected one leading json fence")
 
     def test_rejects_unknown_status(self) -> None:
         payload = deepcopy(VALID_PAYLOAD)
@@ -79,11 +78,14 @@ class RecapOutcomeValidatorTest(unittest.TestCase):
         self.assert_invalid(recap(payload), "status must be one of: success, non-convergence")
 
     def test_rejects_invalid_json(self) -> None:
-        document = "# Recap\n\n## Outcome Block\n\n```json\n{broken\n```\n"
+        document = "## Outcome Block\n\n```json\n{broken\n```\n"
         self.assert_invalid(document, "invalid JSON")
 
-    def test_rejects_trailing_content(self) -> None:
-        self.assert_invalid(recap(VALID_PAYLOAD) + "More prose.\n", "outcome block must be terminal")
+    def test_rejects_leading_content(self) -> None:
+        self.assert_invalid(
+            "# Recap\n\nHuman-facing content.\n\n" + recap(VALID_PAYLOAD),
+            "outcome block must come first",
+        )
 
     def test_rejects_unknown_key_and_bad_types(self) -> None:
         payload = deepcopy(VALID_PAYLOAD)

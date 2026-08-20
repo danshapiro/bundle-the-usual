@@ -202,9 +202,10 @@ class TestExecutableRecipeRegressions(unittest.TestCase):
     @staticmethod
     def run_validator(payload: object) -> subprocess.CompletedProcess[str]:
         document = (
-            "# Recap\n\nPlan review did not converge. No success or merge "
-            "recommendation.\n\n## Outcome Block\n\n```json\n"
+            "## Outcome Block\n\n```json\n"
             f"{json.dumps(payload, indent=2)}\n```\n"
+            "\n# Recap\n\nPlan review did not converge. No success or merge "
+            "recommendation.\n"
         )
         with tempfile.TemporaryDirectory() as directory:
             recap_path = Path(directory) / "recap.md"
@@ -353,8 +354,8 @@ class TestExecutableRecipeRegressions(unittest.TestCase):
                 "head_commit_sha": "0123456789abcdef0123456789abcdef01234567",
             }
             (logs_dir / "recap.md").write_text(
-                "# Recap\n\nComplete.\n\n## Outcome Block\n\n```json\n"
-                f"{json.dumps(payload)}\n```\n",
+                "## Outcome Block\n\n```json\n"
+                f"{json.dumps(payload)}\n```\n\n# Recap\n\nComplete.\n",
                 encoding="utf-8",
             )
             return None
@@ -531,7 +532,7 @@ class TestExecutableRecipeRegressions(unittest.TestCase):
             validation = self.run_validator(payload)
             if validation.returncode != 0:
                 errors.append(
-                    "unchanged terminal validator rejects the plan-failure route: "
+                    "updated leading-block validator rejects the plan-failure route: "
                     f"{validation.stderr.strip()}"
                 )
 

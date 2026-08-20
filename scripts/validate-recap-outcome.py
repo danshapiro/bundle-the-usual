@@ -38,26 +38,25 @@ def read_document(path: Path) -> str:
 def extract_payload(document: str) -> object:
     headings = list(re.finditer(r"^## Outcome Block[ \t]*$", document, re.MULTILINE))
     if not headings:
-        raise ValidationError("missing terminal Outcome Block")
+        raise ValidationError("missing leading Outcome Block")
     if len(headings) != 1:
         raise ValidationError("exactly one Outcome Block is required")
+    if headings[0].start() != 0:
+        raise ValidationError("outcome block must come first")
 
     suffix = document[headings[0].end():]
     opener = "\n\n```json\n"
     if not suffix.startswith(opener):
-        raise ValidationError("expected one terminal json fence")
+        raise ValidationError("expected one leading json fence")
 
-    terminal = re.fullmatch(
-        r"\n\n```json\n(?P<body>.*?)\n```[ \t\r\n]*", suffix, re.DOTALL
-    )
-    if terminal is None:
-        closing = re.search(r"\n```(?P<trailing>[\s\S]*)", suffix[len(opener):])
-        if closing is not None and closing.group("trailing").strip():
-            raise ValidationError("outcome block must be terminal")
-        raise ValidationError("expected one terminal json fence")
+    rest = suffix[len(opener):]
+    closing = re.search(r"\n```", rest)
+    if closing is None:
+        raise ValidationError("expected one leading json fence")
+    body = rest[: closing.start()]
 
     try:
-        return json.loads(terminal.group("body"))
+        return json.loads(body)
     except json.JSONDecodeError as error:
         raise ValidationError(f"invalid JSON in Outcome Block: {error.msg}") from error
 

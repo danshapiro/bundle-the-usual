@@ -1,7 +1,7 @@
 ---
 bundle:
   name: the-usual
-  version: 3.13.1
+  version: 3.14.0
   description: '"The usual" — a rigorous, self-contained development workflow: plan, validate load-bearing assumptions, independent cross-model review loops, subagent-driven execution, and a plain-language recap'
 
 includes:
