@@ -127,6 +127,27 @@ class RecapOutcomeValidatorTest(unittest.TestCase):
         self.assertEqual(result.stderr, "")
         self.assertEqual(result.stdout, "")
 
+    def test_accepts_success_with_failed_plan_review(self) -> None:
+        payload = deepcopy(VALID_PAYLOAD)
+        payload["review_loops"]["plan"] = {"rounds": 3, "final_verdict": "FAILED"}
+        result = self.run_document(recap(payload))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stderr, "")
+        self.assertEqual(result.stdout, "")
+
+    def test_rejects_success_with_failed_delta_review(self) -> None:
+        payload = deepcopy(VALID_PAYLOAD)
+        payload["review_loops"]["delta"] = {"rounds": 5, "final_verdict": "FAILED"}
+        self.assert_invalid(recap(payload), "success requires a passed delta review")
+
+    def test_rejects_non_convergence_when_only_plan_review_failed(self) -> None:
+        payload = deepcopy(VALID_PAYLOAD)
+        payload.update(status="non-convergence", reason="Plan review failed.")
+        payload["review_loops"]["plan"] = {"rounds": 3, "final_verdict": "FAILED"}
+        self.assert_invalid(
+            recap(payload), "non-convergence requires an unsuccessful run fact"
+        )
+
     def test_rejects_semantically_inconsistent_payloads(self) -> None:
         cases = [
             (("schema_version",), 2, "schema_version must equal 1"),

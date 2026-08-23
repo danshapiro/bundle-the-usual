@@ -34,6 +34,30 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.15.0 (2026-08-22):
+#   - CHANGED: delta non-convergence gains a required convergence analysis
+#     (ported from skill-the-usual 319bb48, adapted). When the delta fresheyes
+#     loop ends without passing, the recap's final recommendation now reads the
+#     delta log round by round (blocking counts, severities, whether cleared
+#     findings stayed cleared) and states whether the loop is converging —
+#     findings fewer and less severe across rounds, recommend more review
+#     iterations — or failing to converge, with the apparent reason (a
+#     recurring root cause the fixes never touch, fixes that trade one finding
+#     for another, or a requirement the change cannot satisfy) and the
+#     matching corrective step instead of more blind iterations.
+#   - CHANGED: outcome-block success gates on the final delta verdict alone;
+#     the plan verdict is still recorded but never gates success (in this
+#     recipe the delta loop runs only after a passing plan loop, so a passing
+#     delta verdict implies one). scripts/validate-recap-outcome.py syncs
+#     verbatim: "success requires a passed delta review", and a
+#     non-convergence whose only failed fact is the plan review is rejected.
+#   - NOTE: unlike skill-the-usual, plan-review non-convergence is NOT
+#     downgraded to a footnote here, on purpose: this recipe gates execution
+#     on a passing plan review (capped plan failure skips execution and
+#     reaches recap as a terminal non-convergence), so the plan failure
+#     remains the run's headline outcome. Downgrading it would require
+#     removing that gate.
+#
 # v3.14.0 (2026-08-19):
 #   - NEW: per-stage wall-clock timing (ported from skill-the-usual 2770467,
 #     adapted). Each numbered stage appends `<stage> started|completed
@@ -479,7 +503,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.14.0"
+version: "3.15.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -3581,8 +3605,10 @@ steps:
       The 3-round plan and 5-round delta caps remain bounded circuit breakers.
       If the fifth delta round leaves any substantiated finding unresolved,
       record the delta review as FAILED/non-converged, with no success and no
-      merge recommendation. Never extend the loop merely to chase optional
-      improvements.
+      merge recommendation. Delta-review non-convergence is the major review
+      failure: the recap's final recommendation states whether the loop was
+      converging and needs more iterations, or why it is failing to converge.
+      Never extend the loop merely to chase optional improvements.
 
       Cross-cutting rules (complete as stated):
       - Skill loads are whitelisted: this workflow may load ONLY
@@ -3758,7 +3784,18 @@ steps:
         single line of plain language a non-programmer can follow (what is
         wrong and what it could affect — no jargon). One line per issue.
         In this case, "Suggested next steps" must NOT recommend merging — lead
-        with fixing the listed issues instead.
+        with fixing the listed issues instead — and the final recommendation
+        must include a convergence analysis: read
+        {{workspace.logs_dir}}/fresheyes-delta.md round by round
+        (blocking-finding counts, finding severities, and whether cleared
+        findings stayed cleared). If findings grew fewer and less severe
+        across rounds, say the loop is converging and recommend more review
+        iterations as the next step. If they held flat, grew, or oscillated,
+        say the loop is failing to converge, state the apparent reason — a
+        recurring root cause the fixes never touch, fixes that trade one
+        finding for another, or a requirement the change cannot satisfy — and
+        recommend the matching corrective step, such as revising the plan or
+        clarifying the request, rather than more blind iterations.
       - If plan_passed is not 'true' (current value: {{plan_passed}}), add a
         one-line note to the same warning block that the plan never passed its
         independent review. If the delta review passed but the plan review did
@@ -3799,12 +3836,15 @@ steps:
         requires 0 rounds, every other verdict at least 1.
       - head_commit_sha: `git -C {{workspace.worktree_path}} rev-parse HEAD`
         (full lowercase 40-char SHA).
-      - status "success" requires completed == total, gate result passed, both
-        final logical verdicts PASSED, and no unresolved substantiated finding
-        in either durable review log, with reason null. A raw PASSED marker does
-        not satisfy this while a carried finding remains unresolved. Anything
-        else is status "non-convergence" with a non-empty reason naming the
-        partial, blocked, failed-gate, failed-review, or unresolved-finding fact.
+      - status "success" requires completed == total, gate result passed, the
+        final delta verdict PASSED, and no unresolved substantiated finding in
+        either durable review log, with reason null. Record the plan verdict in
+        full; it never gates success by itself (the delta loop runs only after
+        a passing plan loop, so a passing delta verdict implies one). A raw
+        PASSED marker does not satisfy this while a carried finding remains
+        unresolved. Anything else is status "non-convergence" with a non-empty
+        reason naming the partial, blocked, failed-gate, failed-review, or
+        unresolved-finding fact.
         Keep the existing Outcome Block schema unchanged. schema_version is the
         integer 1.
 

@@ -152,7 +152,9 @@ def validate_payload(payload: object) -> None:
 
     reviews = expect_mapping(root["review_loops"], "review_loops")
     expect_exact_keys(reviews, {"plan", "delta"}, "review_loops")
-    plan_verdict = validate_review(reviews["plan"], "plan", 3)
+    # Plan-review non-convergence is a footnote: it is recorded and validated
+    # for shape, but never gates the run status. Only the delta verdict does.
+    validate_review(reviews["plan"], "plan", 3)
     delta_verdict = validate_review(reviews["delta"], "delta", 5)
 
     sha = root["head_commit_sha"]
@@ -161,20 +163,15 @@ def validate_payload(payload: object) -> None:
             "head_commit_sha must be 40 lowercase hex characters"
         )
 
-    success_facts = (
-        completed == total
-        and gate_result == "passed"
-        and plan_verdict == "PASSED"
-        and delta_verdict == "PASSED"
+    success_facts = completed == total and gate_result == "passed" and (
+        delta_verdict == "PASSED"
     )
     if status == "success" and completed != total:
         raise ValidationError("success requires complete tasks")
     if status == "success" and gate_result != "passed":
         raise ValidationError("success requires a passed full-suite gate")
-    if status == "success" and (
-        plan_verdict != "PASSED" or delta_verdict != "PASSED"
-    ):
-        raise ValidationError("success requires passed reviews")
+    if status == "success" and delta_verdict != "PASSED":
+        raise ValidationError("success requires a passed delta review")
     if status == "non-convergence" and success_facts:
         raise ValidationError("non-convergence requires an unsuccessful run fact")
 
