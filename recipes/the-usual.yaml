@@ -34,6 +34,29 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.16.0 (2026-08-22):
+#   - CHANGED (BREAKING flow): execution and the delta review are no longer
+#     gated on a passing plan review — completing the port of skill-the-usual
+#     319bb48 that v3.15.0 deliberately deferred. A capped plan-review loop
+#     (3 rounds without PASSED) is now a footnote: the run proceeds to
+#     implementation, and the delta review of the finished code governs
+#     success, merging, and the mandatory warning. Deleted the
+#     execute-halt-guard step and its skipped-execution route; the
+#     execute-plan SIMPLE PLAN-REVIEW GATE paragraph becomes PLAN-REVIEW
+#     NON-CONVERGENCE guidance (unresolved plan findings stay binding and are
+#     carried); fresheyes-delta loses its plan_passed condition;
+#     execute-collect loses its condition and its FATAL message no longer
+#     assumes a passing plan. The recap's review-failure ending replaces the
+#     plan-warning note with a one-line footnote after the stage bullets, and
+#     the outcome-block success rule drops the now-false "delta implies plan"
+#     parenthetical (success has gated on the delta verdict alone since
+#     v3.15.0). Delta non-convergence keeps the warning block plus the
+#     v3.15.0 convergence analysis.
+#   - TESTS: the capped-plan-review route now pins continuation to execution
+#     (no step conditions gate on plan_passed), loud failure when execute
+#     evidence is lost, and validator acceptance of a plan-FAILED /
+#     delta-PASSED success.
+#
 # v3.15.0 (2026-08-22):
 #   - CHANGED: delta non-convergence gains a required convergence analysis
 #     (ported from skill-the-usual 319bb48, adapted). When the delta fresheyes
@@ -503,7 +526,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.15.0"
+version: "3.16.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -2122,8 +2145,10 @@ steps:
 
       The 3-round cap remains bounded as a circuit breaker. If the final round
       leaves any substantiated finding unresolved, record the plan review as
-      FAILED/non-converged, with no success and no merge recommendation. Never
-      extend the loop merely to chase optional improvements.
+      FAILED/non-converged and continue. Plan-review non-convergence is a
+      footnote, not a headline failure: the recap notes it in one line, and
+      the delta review — not the plan review — decides the final code's
+      readiness. Never extend the loop merely to chase optional improvements.
 
       Cross-cutting rules (complete as stated):
       - Skill loads are whitelisted: this workflow may load ONLY
@@ -2153,7 +2178,6 @@ steps:
     # The agent that executes this step's instructions (this stage's worker —
     # it acts as the SDD "controller", dispatching implementers and reviewers).
     agent: "the-usual:step-runner"
-    condition: "{{plan_passed}} == 'true'"
     timeout: 864000
     output: "execute_result"
     parse_json: true
@@ -2266,9 +2290,12 @@ steps:
       Plan:     {{plan.plan_path}}
       Worktree: {{workspace.worktree_path}}   (work entirely inside it; never on main/master)
 
-      SIMPLE PLAN-REVIEW GATE: this step runs only when the always-defined
-      `plan_passed` flag is true. A failed/non-converged plan review cannot enter
-      implementation.
+      PLAN-REVIEW NON-CONVERGENCE (no gate): this step runs whether or not
+      the always-defined `plan_passed` flag is true. A failed/non-converged
+      plan review is a footnote, not a gate: implementation proceeds, and the
+      delta review of the finished code governs the run. Any plan-review
+      finding still unresolved stays binding and must be carried into the
+      durable record, not quietly dropped.
 
       At preflight, before every task, before every fixer/reviewer dispatch, and
       before final review, re-read the current committed plan and extract its
@@ -3337,7 +3364,6 @@ steps:
     type: "bash"
     output: "execute_result"
     parse_json: true
-    condition: "{{plan_passed}} == 'true'"
     env:
       LOGS_DIR: "{{workspace.logs_dir}}"
     command: |
@@ -3347,7 +3373,7 @@ steps:
         printf '%s\n' "WARNING: execute-result.json missing; using pending-output.json anchor" >&2
         result_file="$LOGS_DIR/pending-output.json"
       else
-        printf '%s\n' "FATAL: execution output is missing after a passing plan review" >&2
+        printf '%s\n' "FATAL: execution output is missing after the execute step" >&2
         exit 1
       fi
       python3 - "$result_file" <<'PY'
@@ -3377,16 +3403,6 @@ steps:
       PY
     on_error: "fail"
 
-  # ---- Plan non-convergence summary: implementation was intentionally skipped,
-  # but recap still needs an always-defined, honest execution contract.
-  - id: "execute-halt-guard"
-    type: "bash"
-    output: "execute_result"
-    parse_json: true
-    condition: "{{plan_passed}} != 'true'"
-    command: |
-      echo '{"blocked":"true","blocked_reason":"Plan review did not converge; implementation was skipped.","tasks_completed":0,"total_tasks":0,"final_review_verdict":"NOT_RUN - plan review did not converge","execution_notes":"SKIPPED / NON-CONVERGED: the plan hit its independent-review cap without passing, so implementation did not run."}'
-
   # ===========================================================================
   # STEP 5 — fresheyes on the DELTA (worktree vs original fork; max 5, PASS-early)
   #
@@ -3399,7 +3415,6 @@ steps:
     timeout: 864000
     output: "fresheyes_delta_result"
     parse_json: true
-    condition: "{{plan_passed}} == 'true'"
     while_condition: "{{delta_passed}} != 'true'"
     max_while_iterations: 5
     break_when: "{{delta_passed}} == 'true'"
@@ -3684,7 +3699,9 @@ steps:
 
       Note if either fresheyes loop hit its iteration cap WITHOUT passing (plan
       cap 3, delta cap 5) — that means it exited FAILED/non-converged, not a
-      clean PASS. List every unresolved substantiated finding carried in the
+      clean PASS. A plan-loop non-convergence is a footnote (one line, per the
+      ending rules below); a delta-loop non-convergence is the major review
+      failure. List every unresolved substantiated finding carried in the
       durable review logs. No success and no merge recommendation are permitted
       while any such finding remains unresolved.
 
@@ -3796,11 +3813,14 @@ steps:
         finding for another, or a requirement the change cannot satisfy — and
         recommend the matching corrective step, such as revising the plan or
         clarifying the request, rather than more blind iterations.
-      - If plan_passed is not 'true' (current value: {{plan_passed}}), add a
-        one-line note to the same warning block that the plan never passed its
-        independent review. If the delta review passed but the plan review did
-        not, still emit the warning block, containing that note alone.
-      - If both passed: no warning block — end normally.
+      - If plan_passed is not 'true' (current value: {{plan_passed}}), treat
+        the plan review's non-convergence as a footnote: add exactly one line
+        after the stage bullets in "What happened at each stage" — "* The plan
+        review did not converge within its three rounds; the delta review,
+        which covers the final code, governs the run." — and give it no other
+        emphasis: the plan verdict alone never withholds next-step choices,
+        never lowers the run's status, and never triggers the warning block.
+      - If delta_passed is 'true': no warning block — end normally.
 
       Write the full recap to {{workspace.logs_dir}}/recap.md.
 
@@ -3839,8 +3859,7 @@ steps:
       - status "success" requires completed == total, gate result passed, the
         final delta verdict PASSED, and no unresolved substantiated finding in
         either durable review log, with reason null. Record the plan verdict in
-        full; it never gates success by itself (the delta loop runs only after
-        a passing plan loop, so a passing delta verdict implies one). A raw
+        full; it never gates success by itself. A raw
         PASSED marker does not satisfy this while a carried finding remains
         unresolved. Anything else is status "non-convergence" with a non-empty
         reason naming the partial, blocked, failed-gate, failed-review, or

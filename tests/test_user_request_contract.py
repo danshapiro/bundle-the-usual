@@ -1,11 +1,11 @@
 """Behavior tests for the revision-free User Request flow's executable paths.
 
 Only pieces of the User Request contract that are actually executed are
-covered here: task-brief extraction via embedded bash, the terminal
-non-convergence route through the recap validator, and injection safety of
-the dynamic bash bindings. Whether the parent/README/recipe *describe* the
-flow in expected prose is not asserted here — matching expected wording is
-not a behavior test.
+covered here: task-brief extraction via embedded bash, the
+continue-after-capped-plan-review route through the recap validator, and
+injection safety of the dynamic bash bindings. Whether the
+parent/README/recipe *describe* the flow in expected prose is not asserted
+here — matching expected wording is not a behavior test.
 """
 
 from __future__ import annotations
@@ -485,65 +485,69 @@ class TestExecutableRecipeRegressions(unittest.TestCase):
         if errors:
             self.fail("\n".join(errors))
 
-    def test_capped_plan_review_has_terminal_nonconvergence_route(self):
+    def test_capped_plan_review_continues_to_execution(self):
         errors = []
 
         false_values: dict[str, object] = {
             "plan_passed": "false",
             "delta_passed": "false",
         }
-        for implementation_step in ("execute-plan", "fresheyes-delta"):
-            if condition_allows(step_section(implementation_step), false_values):
+        for continuation_step in ("execute-plan", "execute-collect", "fresheyes-delta"):
+            if not condition_allows(step_section(continuation_step), false_values):
                 errors.append(
-                    f"{implementation_step} runs after capped plan-review failure"
+                    f"{continuation_step} is still gated on a passing plan review"
                 )
+        if any(step_id == "execute-halt-guard" for step_id, _ in top_level_steps()):
+            errors.append("the skipped-execution halt-guard route still exists")
 
+        # With execution ungated but its output evidence lost, the route must
+        # fail loud at execute-collect rather than fabricate an execute_result
+        # for the recap.
         execute_result, route_problems = self.run_execute_result_bash("false")
-        errors.extend(route_problems)
-        if execute_result is None:
+        if execute_result is not None:
             errors.append(
-                "plan-failure route reaches recap without a defined execute_result"
+                "lost execute evidence after a capped plan review produced a "
+                f"result: {execute_result}"
             )
-        else:
-            completed = execute_result.get("tasks_completed")
-            total = execute_result.get("total_tasks")
-            if (
-                type(completed) is not int
-                or type(total) is not int
-                or completed != 0
-                or total < 0
-            ):
-                errors.append(
-                    "plan-failure route does not report honest nonnegative "
-                    f"execution counts (got {completed}/{total})"
-                )
-            payload = {
-                "schema_version": 1,
-                "status": "non-convergence",
-                "reason": "Plan review hit its cap without passing; execution did not run.",
-                "execution_tasks": {"completed": completed, "total": total},
-                "full_suite_gate": {"result": "not-run"},
-                "review_loops": {
-                    "plan": {"rounds": 3, "final_verdict": "FAILED"},
-                    "delta": {"rounds": 0, "final_verdict": "NOT_RUN"},
-                },
-                "head_commit_sha": "0123456789abcdef0123456789abcdef01234567",
-            }
-            validation = self.run_validator(payload)
-            if validation.returncode != 0:
-                errors.append(
-                    "updated leading-block validator rejects the plan-failure route: "
-                    f"{validation.stderr.strip()}"
-                )
+        elif not any("execute-collect" in problem for problem in route_problems):
+            errors.append(
+                "lost execute evidence after a capped plan review did not fail "
+                f"loud at execute-collect (problems: {route_problems})"
+            )
+        if 'on_error: "fail"' not in step_section("execute-collect"):
+            errors.append("execute-collect is not a loud failing gate")
+
+        # The principal new route: the plan review failed at its cap, but
+        # execution ran to completion and the delta review passed — a clean
+        # success, with the plan failure only a footnote.
+        payload = {
+            "schema_version": 1,
+            "status": "success",
+            "reason": None,
+            "execution_tasks": {"completed": 2, "total": 2},
+            "full_suite_gate": {"result": "passed"},
+            "review_loops": {
+                "plan": {"rounds": 3, "final_verdict": "FAILED"},
+                "delta": {"rounds": 1, "final_verdict": "PASSED"},
+            },
+            "head_commit_sha": "0123456789abcdef0123456789abcdef01234567",
+        }
+        validation = self.run_validator(payload)
+        if validation.returncode != 0:
+            errors.append(
+                "validator rejects the plan-footnote success route: "
+                f"{validation.stderr.strip()}"
+            )
 
         recap = norm(step_section("recap"))
         for required in (
             "If plan_passed is not 'true'",
-            "must NOT recommend merging",
-            "no success and no merge recommendation",
+            "governs the run",
+            "never triggers the warning block",
+            "convergence analysis",
         ):
             if required.lower() not in recap.lower():
-                errors.append(f"recap lost plan-failure rule: {required}")
+                errors.append(f"recap lost plan-footnote/delta-analysis rule: {required}")
 
         lost_result, lost_problems = self.run_execute_result_bash("true")
         if lost_result is not None:
