@@ -444,6 +444,16 @@
 # - Compaction anchors: per-run /tmp/the-usual-pending-output.{{session.id}}.json
 #   plus the logs-side result files the collect steps validate.
 #
+# Resume reconciliation (ported from skill-the-usual 5383bd4, adapted): on any
+# retry, resume, or post-compaction recovery, the durable artifacts — git
+# history, the progress ledger, the logs and receipts under logs_dir,
+# stage-timing.txt — are authoritative, and recovered context (pending-output
+# anchors, todos, loop flags, recollection) is only a cache of it. Steps
+# reconcile the cache against the artifacts, correcting the cache and never
+# the artifacts, before continuing: an interrupted run can leave context
+# claiming progress the artifacts disprove. Agent-facing copies live in each
+# step's RECOVERY block.
+#
 # base_ref invariance: base_ref is the full SHA captured in Step 0 before any
 # run commit; it never changes. The final delta review diffs base_ref...HEAD,
 # never a moving branch name.
@@ -699,7 +709,9 @@ steps:
           substantially completed the work, VERIFY its artifacts rather than
           redoing them, complete whatever is missing, and emit the contract
           JSON. A prior attempt's work counts — only its missing receipt failed
-          it.
+          it. The artifacts are authoritative over the anchor and your
+          recollection: on any disagreement, correct the anchor to match them
+          — never rewrite or fabricate artifacts to fit it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, and make the completed JSON your final message.
 
@@ -817,7 +829,9 @@ steps:
           log). If a previous attempt substantially completed the work, VERIFY
           its artifacts rather than redoing them, complete whatever is missing,
           and emit the contract JSON. A prior attempt's work counts — only its
-          missing receipt failed it.
+          missing receipt failed it. The artifacts are authoritative over the
+          anchor and your recollection: on any disagreement, correct the anchor
+          to match them — never rewrite or fabricate artifacts to fit it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, WRITE the completed JSON to
           {{workspace.logs_dir}}/write-plan-result.json (the recipe reads this
@@ -1259,7 +1273,10 @@ steps:
           updates in git log. If a previous attempt substantially completed the
           work, VERIFY its artifacts rather than redoing them, complete whatever
           is missing, and emit the contract JSON. A prior attempt's work counts
-          — only its missing receipt failed it.
+          — only its missing receipt failed it. The artifacts are authoritative
+          over the anchor and your recollection: on any disagreement, correct
+          the anchor to match them — never rewrite or fabricate artifacts to
+          fit it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, WRITE the completed JSON to
           {{workspace.logs_dir}}/load-bearing-result.json (the recipe reads
@@ -1912,7 +1929,10 @@ steps:
           worktree. If a previous attempt substantially completed the work,
           VERIFY its artifacts rather than redoing them, complete whatever is
           missing, and emit the contract JSON. A prior attempt's work counts —
-          only its missing receipt failed it.
+          only its missing receipt failed it. The artifacts are authoritative
+          over the anchor and your recollection: on any disagreement, correct
+          the anchor to match them — never rewrite or fabricate artifacts to
+          fit it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, and make the completed JSON your final message.
 
@@ -2148,7 +2168,10 @@ steps:
           git log. If a previous attempt substantially completed the work,
           VERIFY its artifacts rather than redoing them, complete whatever is
           missing, and emit the contract JSON. A prior attempt's work counts —
-          only its missing receipt failed it.
+          only its missing receipt failed it. The artifacts are authoritative
+          over the anchor and your recollection: on any disagreement, correct
+          the anchor to match them — never rewrite or fabricate artifacts to
+          fit it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, WRITE the completed JSON to
           {{workspace.logs_dir}}/execute-result.json (the recipe reads this
@@ -3390,7 +3413,10 @@ steps:
           worktree. If a previous attempt substantially completed the work,
           VERIFY its artifacts rather than redoing them, complete whatever is
           missing, and emit the contract JSON. A prior attempt's work counts —
-          only its missing receipt failed it.
+          only its missing receipt failed it. The artifacts are authoritative
+          over the anchor and your recollection: on any disagreement, correct
+          the anchor to match them — never rewrite or fabricate artifacts to
+          fit it.
       (c) FINISH — when your work is done, read that file back, fill in real
           values, and make the completed JSON your final message.
 
