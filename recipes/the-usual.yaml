@@ -564,6 +564,10 @@ context:
     - Code that doesn't match its stated purpose
     Focus on finding the most severe problems you can - the more 'critical' and 'major' problems you discover, the better.
 
+    ### Default Assumptions
+
+    Unless the request states otherwise, the system under review has excellent observability — clear, diagnosable logging of behavior and failures — and zero auditability requirement: the absence of an audit trail or compliance-grade logging is not a finding.
+
     ### For Commits/Changes
 
     - Validate that the commit message accurately describes what the changes actually do
