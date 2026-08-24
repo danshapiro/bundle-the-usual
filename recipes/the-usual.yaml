@@ -34,6 +34,19 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.17.0 (2026-08-23):
+#   - CHANGED (review-loop termination): a PASSED round ends the review loop
+#     outright. No fixes are authorized after a pass — no post-pass repairs
+#     and no re-review of post-pass commits: findings from a passing round
+#     receive recorded final dispositions without changing the work (CLEARED
+#     only with evidence the passing round already reviewed; otherwise
+#     UNSUBSTANTIATED, OUT-OF-SCOPE, or OPTIONAL for Minor/Nit), and the run
+#     proceeds. The final-HEAD full-suite gate still runs, but its fixes are
+#     authorized by the gate and never re-enter the review loop. Aligns with
+#     skill-the-usual `main` and the-usual-beta/add-repair-loop; the beta
+#     track had grown a divergent post-pass re-review rule that turned
+#     post-pass Minor bookkeeping into extra paid review rounds.
+#
 # v3.16.0 (2026-08-22):
 #   - CHANGED (BREAKING flow): execution and the delta review are no longer
 #     gated on a passing plan review — completing the port of skill-the-usual
@@ -299,10 +312,12 @@
 #     review dispatch.
 #   - NEW: final-HEAD full-suite guarantee in Step 5: on a PASSED delta
 #     review that follows fix commits made during the loop, run the full
-#     suite once on the current HEAD. Failures are fixed, committed, and
-#     reported as passed=false (verdict stays PASSED) so the loop re-reviews;
-#     the branch cannot finish without green full-suite evidence on its
-#     final state.
+#     suite once on the current HEAD. Failures are fixed, committed, and the
+#     suite re-run to green; gate fixes are authorized by the gate and never
+#     re-enter the review loop. The branch cannot finish without green
+#     full-suite evidence on its final state. (Superseded at v3.17.0: the
+#     "reported as passed=false so the loop re-reviews" step is removed; a
+#     PASSED round now ends the loop outright.)
 #
 # v3.3.0 (2026-08-01):
 #   - NEW (diagnostic config, evidence-backed on Amplifier 2026.08.01): the
@@ -526,7 +541,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.16.0"
+version: "3.17.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -2135,10 +2150,13 @@ steps:
             the whole artifact and with every file the fix touched. Late-loop
             findings are typically new inconsistencies introduced by remediation
             edits, not missed defects in the original work.
-          - If the raw verdict is PASSED, reconcile every current and carried
-            finding explicitly. Substantiated Minor or Nit findings may reach
-            their final disposition locally with focused evidence, without
-            consuming another independent round.
+          - If the raw verdict is PASSED, the loop ends: it authorizes no
+            further fixes and no further rounds. Reconcile every current and
+            carried finding explicitly and record a final disposition for each
+            without changing the plan — CLEARED only with evidence the passing
+            round already reviewed, UNSUBSTANTIATED with concrete
+            counter-evidence, OUT-OF-SCOPE, or (Minor and Nit findings only)
+            OPTIONAL — then proceed.
           - Set logical `passed=true` only when the raw current report is PASSED
             and every substantiated current or carried finding has a valid
             final disposition.
@@ -3603,10 +3621,13 @@ steps:
             the whole artifact and with every file the fix touched. Late-loop
             findings are typically new inconsistencies introduced by remediation
             edits, not missed defects in the original work.
-          - If the raw verdict is PASSED, reconcile every current and carried
-            finding explicitly. Substantiated Minor or Nit findings may reach
-            their final disposition locally with focused evidence, without
-            consuming another independent round.
+          - If the raw verdict is PASSED, the loop ends: it authorizes no
+            further fixes and no further rounds. Reconcile every current and
+            carried finding explicitly and record a final disposition for each
+            without changing the work — CLEARED only with evidence the passing
+            round already reviewed, UNSUBSTANTIATED with concrete
+            counter-evidence, OUT-OF-SCOPE, or (Minor and Nit findings only)
+            OPTIONAL — then proceed.
           - Set logical `passed=true` only when the raw current report is PASSED
             and every substantiated current or carried finding has a valid
             final disposition.
@@ -3615,7 +3636,9 @@ steps:
             run the full test suite once on current HEAD. If it is not green
             excluding ledger-recorded pre-existing failures, record and fix the
             complete failure set, verify and COMMIT the fixes, append the
-            outcome, and report `passed=false` so those commits are re-reviewed.
+            outcome, and re-run the suite; when green, report `passed=true`. A
+            PASSED round stays passed: gate fixes are authorized by the gate and
+            never re-enter the review loop.
 
       The 3-round plan and 5-round delta caps remain bounded circuit breakers.
       If the fifth delta round leaves any substantiated finding unresolved,
