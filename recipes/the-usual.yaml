@@ -21,7 +21,9 @@
 #   2. load-bearing on the plan; fix what comes up
 #   3. fresheyes on the plan, fix, until PASS or 3x
 #   4. executing-plans -> execute the plan
-#   5. fresheyes on the delta (worktree vs original fork) until PASS or 5x
+#   5. fresheyes on the delta (worktree vs original fork) until PASS or 5x; a
+#      FAILED delta round's committed repairs get a focused review episode
+#      (up to 5 rounds; up to 5 episodes per run)
 #   6. halt only on a serious data-loss/confusion issue
 #   7. else end with a per-stage recap + low-jargon summary of what was built
 #
@@ -33,6 +35,45 @@
 # =============================================================================
 # CHANGELOG
 # =============================================================================
+#
+# v3.18.0 (2026-08-24):
+#   - NEW (focused repair-review loop): when a delta fresheyes round returns
+#     FAILED and its repairs are committed, the repairs themselves are now
+#     reviewed before the next delta round or the recap: up to five focused
+#     rounds per episode against the cumulative repair delta (the failed
+#     round's recorded Reviewed head through the repair HEAD), recorded in
+#     logs/fresheyes-focused.md with per-episode `episode <N>
+#     started|completed` timing lines and separate focused/delta accumulators.
+#     A PASSED focused round ends the episode (no further fixes authorized;
+#     the passing report's own findings get recorded dispositions and never
+#     re-trigger a round); a fifth failed focused round closes the episode
+#     with its unresolved findings still binding. At most five episodes per
+#     run — the episode runs even after delta round five — and focused rounds
+#     consume no delta rounds; the delta loop never gains a sixth round.
+#     Ports skill-the-usual d3393af (the-usual-beta/add-repair-loop).
+#   - NEW (turn economy): the skill's turn-economy policy is now a shared
+#     context value (`turn_economy`) spliced verbatim after every scope_rule
+#     splice and into both fresheyes reviewer packets ahead of the reviewer
+#     body. Batching changes scheduling only: instructions, outputs, evidence,
+#     order, and gates are preserved. Ports the same skill commit (the
+#     DURABILITY bullet targets this recipe's durable logs; there is no
+#     run-contract artifact here).
+#   - CHANGED (reviewer prompt): fresheyes_reviewer_body gains a "Bounded
+#     Read Fan-Out" section (batch independent read-only calls, bound reads
+#     to the claim under test, attribute conclusions to their reads).
+#   - CHANGED (durable record): each fresheyes round entry now records the
+#     Reviewed head (the full HEAD SHA the review covered); a failed delta
+#     round's Reviewed head supplies the focused loop's repair base.
+#   - CHANGED (recap): the Delta review stage bullet reports focused totals;
+#     the Results table gains a subordinate `focused` row (episode count and
+#     total rounds, last-episode verdict, summed episode spans — inside the
+#     Delta review span; Total still sums only the six stage rows); the caps
+#     note, failure-warning trigger, next-step gating, and outcome-block
+#     success rule now cover unresolved findings in ANY review log, including
+#     a focused episode — an exhausted episode whose findings all reached
+#     final dispositions does not by itself trigger the warning. The "Close
+#     out the plan" marker block is removed (retired in skill-the-usual
+#     baea9e1).
 #
 # v3.17.0 (2026-08-23):
 #   - CHANGED (review-loop termination): a PASSED round ends the review loop
@@ -540,8 +581,8 @@
 # =============================================================================
 
 name: "the-usual"
-description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.17.0"
+description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x, with focused repair-review episodes after failed rounds) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
+version: "3.18.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -598,6 +639,49 @@ context:
 
     KISS governs how the User Request is satisfied, and YAGNI limits new work
     to capabilities required by the User Request.
+
+  # ---- Shared turn-economy policy (single canonical definition) ---------------
+  # Every step below splices this in verbatim immediately after the scope rule;
+  # the two fresheyes reviewer packets receive it inside the BEGIN/END reviewer
+  # instruction, after the CURRENT USER REQUEST block and ahead of the reviewer
+  # body. Batching changes scheduling only.
+  turn_economy: |-
+    Turn economy changes scheduling only: preserve every call, instruction,
+    output, acceptance criterion, evidence item, required order, and gate. This
+    policy is a fixed safety boundary; apply it as written.
+
+    - INDEPENDENCE: Put ready independent calls in the same tool-call response
+      only after confirming all inputs are known, no call needs another's
+      result, and no call can change state another reads or writes. Treat
+      uncertain independence as a dependency.
+    - SAFE REPORT FAN-OUT: Calls that only read shared state may batch. Each may
+      also write only to its own predeclared, disjoint report path — one per
+      topic under the run's reports directory — after shared directory setup. A
+      shared ledger, anchor, receipt, index, Git state, or other shared artifact
+      is not a disjoint report.
+    - MUTATION BOUNDARY: Run mutations of one worktree one at a time: one
+      mutating delegate per worktree at any moment. Parallel mutators require
+      isolated worktrees with independent Git state and disjoint external
+      targets. Calls are dependent when either can change state the other reads
+      or writes. A mutating delegate without a bounded write scope owns its
+      whole worktree.
+    - CALL BOUNDARY: A batch combines scheduling only. Each call keeps its own
+      instruction, scope, output, acceptance criteria, and evidence; do not
+      widen or merge calls merely to reduce turns. Attribute every result to
+      the call that produced it.
+    - JOIN: After a batch finishes, account for every result before any
+      downstream action that depends on those results, including synthesis,
+      repair, review, commit, or another gate.
+    - DURABILITY: Record each result in the run's durable record — the ledgers
+      and logs under the run's logs directory — in the first response after the
+      result lands and before reading any full report; then read only the
+      sections needed. Put ready independent bookkeeping in the same tool-call
+      response; never defer it to a phase-end sweep.
+    - REVIEW: Preserve each review's specified exact instruction, context
+      isolation, and provider/model settings; wait for its verdict before
+      dependent repair. When a batching assumption proves wrong or a boundary
+      is violated, tighten: isolate the affected calls and run them one at a
+      time.
 
   # ---- Shared fresheyes reviewer prompt (single canonical definition) ---------
   # Steps 3 and 5 splice these around their own scope sentence; the delegated
@@ -666,6 +750,19 @@ context:
     - Does it create new tests as it should, if adding testable functionality?
     - Or do the changes not impact existing test coverage?
     - Flag as blocking if tests should have been updated/added but weren't
+
+    ### Bounded Read Fan-Out
+
+    - Put ready independent inspection calls in the same response: reads of
+      different files and read-only Git commands are independent when neither
+      needs the other's result and neither can change state the other reads.
+      Treat uncertain independence as a dependency and run those calls one at a
+      time.
+    - Keep reads bounded to what the claim under test needs instead of reading
+      whole files or reports by reflex.
+    - Account for every returned result, and attribute each conclusion to the
+      reads that support it, before drawing any conclusion that depends on
+      those results.
 
     ### Classification
 
@@ -977,6 +1074,8 @@ steps:
       block unchanged through every plan mutation.
 
       {{scope_rule}}
+
+      {{turn_economy}}
 
       Write the implementation plan for this task by following the methodology
       below EXACTLY. It is the user's writing-plans discipline, inlined in full.
@@ -1422,6 +1521,8 @@ steps:
       remedies advise. Evidence and clearance conditions are binding technical
       input; the load-bearing stage chooses the proportionate plan response
       within the current User Request.
+
+      {{turn_economy}}
 
       Amplifier translation of the subagent mechanics (applies throughout):
       - File-report pattern (appended to every dispatch, on top of each
@@ -2070,6 +2171,8 @@ steps:
       within the current User Request while satisfying the finding's clearance
       condition.
 
+      {{turn_economy}}
+
       (a) COMMIT FIRST: ensure every change in the worktree is committed —
           fresheyes only reviews committed work. Do not commit anything under the
           logs dir (it lives outside the worktree tree by design).
@@ -2100,6 +2203,8 @@ steps:
       CURRENT USER REQUEST (complete block, pasted verbatim from the committed plan):
       [paste the complete current User Request block here]
 
+      {{turn_economy}}
+
       {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
 
@@ -2115,8 +2220,9 @@ steps:
           Major, Minor, and Nit finding record severity, location, description,
           assessment (`substantiated` or `unsubstantiated`), disposition/status,
           and clearing evidence. Also record the raw verdict, reviewer summary,
-          and reviewer identity label actually used
-          ({{reviewer_provider}}/{{reviewer_model}}, or the override in force).
+          reviewer identity label actually used
+          ({{reviewer_provider}}/{{reviewer_model}}, or the override in force),
+          and the Reviewed head (the full HEAD SHA the review covered).
           Read prior entries first. Unresolved substantiated findings are
           carried until explicit clearance across context-free rounds; a later
           PASSED cannot erase prior unresolved findings.
@@ -2336,6 +2442,8 @@ steps:
       remedies advise. The responsible controller, implementer, or fixer chooses
       the proportionate response within the current User Request and established
       project patterns while satisfying each clearance condition.
+
+      {{turn_economy}}
 
       Amplifier translation (applies throughout): "dispatch a subagent" = call
       the delegate tool with the filled-in prompt template as the instruction and
@@ -2913,6 +3021,8 @@ steps:
       Work from: [directory]
 
       {{scope_rule}}
+
+      {{turn_economy}}
 
       **While you work:** If you encounter something unexpected or unclear, **ask questions**.
       It's always OK to pause and clarify. Don't guess or make assumptions.
@@ -3516,6 +3626,18 @@ steps:
       in this iteration. NOT announced (no extra banners; do not improvise):
       verdict parsing, commits, and fix work.
 
+      Focused repair-review rounds (item (f) below) have their own banner,
+      printed once per focused round before its dispatch (N = episode number,
+      j = focused round within the episode):
+
+      ==================================================================
+      ==================================================================
+      >>> THE USUAL | STAGE 5/6: FOCUSED REPAIR REVIEW — episode N, round j of up to 5 (independent cross-model review)
+      >>> Reviewing the committed repairs from the failed delta round
+      >>> One cross-model review dispatch plus any fixes — this may take a while
+      ==================================================================
+      ==================================================================
+
       Stage timing (append-only bookkeeping; the recap turns these lines into
       its Results table). The log is {{workspace.logs_dir}}/stage-timing.txt,
       one space-separated line per event: `<stage> started|completed
@@ -3546,6 +3668,8 @@ steps:
       remedies advise. The remediation actor chooses the proportionate response
       within the current User Request while satisfying each finding's clearance
       condition.
+
+      {{turn_economy}}
 
       (a) COMMIT FIRST: ensure all work in the worktree is committed before
           review. Do not commit anything under the logs dir.
@@ -3581,6 +3705,8 @@ steps:
       CURRENT USER REQUEST (complete block, pasted verbatim from the committed plan):
       [paste the complete current User Request block here]
 
+      {{turn_economy}}
+
       {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
 
@@ -3595,8 +3721,10 @@ steps:
           Major, Minor, and Nit finding record severity, location, description,
           assessment (`substantiated` or `unsubstantiated`),
           disposition/status, and clearing evidence. Also record the raw
-          verdict, reviewer summary, and reviewer identity label actually used
-          ({{reviewer_provider}}/{{reviewer_model}}, or the override in force).
+          verdict, reviewer summary, reviewer identity label actually used
+          ({{reviewer_provider}}/{{reviewer_model}}, or the override in force),
+          and the Reviewed head (the full HEAD SHA the review covered — a failed
+          delta round's Reviewed head is the focused loop's repair base).
           Read prior entries first. Every finding is durably recorded and
           assessed. Unresolved substantiated findings are carried until explicit
           clearance across context-free rounds; a later PASSED cannot erase
@@ -3629,10 +3757,11 @@ steps:
             counter-evidence, OUT-OF-SCOPE, or (Minor and Nit findings only)
             OPTIONAL — then proceed.
           - Set logical `passed=true` only when the raw current report is PASSED
-            and every substantiated current or carried finding has a valid
-            final disposition.
+            and every substantiated current or carried finding — in either the
+            delta or the focused accumulator — has a valid final disposition.
           - Before reporting `passed=true`, if any fix commits landed during
-            this delta-review loop since the last passing full-suite gate entry,
+            this delta-review loop (including its focused episodes) since the
+            last passing full-suite gate entry,
             run the full test suite once on current HEAD. If it is not green
             excluding ledger-recorded pre-existing failures, record and fix the
             complete failure set, verify and COMMIT the fixes, append the
@@ -3640,13 +3769,94 @@ steps:
             PASSED round stays passed: gate fixes are authorized by the gate and
             never re-enter the review loop.
 
-      The 3-round plan and 5-round delta caps remain bounded circuit breakers.
-      If the fifth delta round leaves any substantiated finding unresolved,
-      record the delta review as FAILED/non-converged, with no success and no
-      merge recommendation. Delta-review non-convergence is the major review
-      failure: the recap's final recommendation states whether the loop was
-      converging and needs more iterations, or why it is failing to converge.
-      Never extend the loop merely to chase optional improvements.
+      (f) FOCUSED REPAIR-REVIEW LOOP — when this round's raw verdict is FAILED
+          and its repairs are committed, the repairs themselves are reviewed
+          before this step returns: run up to five focused review rounds
+          against the cumulative repair delta — the commits from this failed
+          round's recorded Reviewed head through the current repair HEAD —
+          recording rounds in {{workspace.logs_dir}}/fresheyes-focused.md.
+          This episode is one of at most five per run (one per failed delta
+          round). When the failed delta round was the fifth, the episode still
+          runs; the run then continues to the recap because the delta cap is
+          spent. The delta and focused loops keep separate counters, logs, and
+          caps: neither loop's rounds count toward the other, and the delta
+          loop never gains a sixth round.
+
+          Each focused round works like (b)-(e) above, with these differences:
+
+          - SCOPE: the reviewer instruction is the same BEGIN/END block, but
+            its review sentence becomes:
+            "Review the repair delta from <this failed delta round's Reviewed
+            head> through HEAD using `git -C {{workspace.worktree_path}} diff
+            <repair-base>...HEAD`. These commits repair code that an earlier
+            independent review already found defective. You may inspect any
+            repository context you need, but report only findings that
+            identify a defect in the edited repair lines themselves; do not
+            report findings about any other code."
+            The same endpoint sanity check applies with the repair base in
+            place of {{workspace.base_ref}}: confirm the repair base and HEAD
+            are the intended endpoints, and if their SHAs differ but the diff
+            appears empty, fix the path or range before review rather than
+            concluding there are no changes.
+          - LOG: focused rounds are recorded in
+            {{workspace.logs_dir}}/fresheyes-focused.md, one entry per round:
+
+            ## Focused round <j> of 5, episode <N> of at most 5
+            Verdict: PASSED | FAILED | NO_MARKER
+            Repair base: <this failed delta round's Reviewed head, full SHA>
+            Reviewed head: <full SHA reviewed this round>
+            Blocking issues: <count>
+            <per-finding records exactly as (d): severity, location,
+            description, assessment, disposition/status, clearing evidence>
+
+            ### Accumulators after this round
+            Focused accumulator: <unresolved substantiated findings carried by
+            focused episodes and still binding — finding ids or locations, or
+            none>
+            Delta accumulator: <unresolved substantiated findings carried by
+            the delta loop and still binding — finding ids or locations, or
+            none>
+
+            Summary: <one sentence>
+            Review report: <path, if stored separately>
+            Fix commit: <sha, or none>
+
+            The accumulators stay separate: a focused round consumes no delta
+            round, and the delta target may be declared successful only when
+            neither accumulator carries an unresolved finding.
+          - TIMING: the focused log also carries one
+            `episode <N> started <ISO-8601 UTC>` line appended when the episode
+            opens — a retried or recovered episode keeps its original `started`
+            line, which is never rewritten — and one `episode <N> completed
+            <ISO-8601 UTC>` line appended when the episode closes, whether by a
+            passing round or by exhaustion. Round entries sit between their
+            episode's boundary lines.
+
+          A PASSED focused round ends the episode: it authorizes no further
+          fixes and no further focused rounds. The passing round reviewed the
+          enlarged cumulative repair delta, so findings from the episode's
+          earlier rounds reach CLEARED with that evidence. The passing report's
+          own findings receive recorded final dispositions without fixes —
+          under the scope rule, with OPTIONAL available to Minor and Nit
+          findings — and they never trigger another focused round. A focused
+          NO_MARKER consumes a focused round. After each focused FAILED round —
+          including the fifth — disposition and repair the findings, verify
+          with focused tests, and commit; after the fifth, no further focused
+          round runs and the episode closes with every unresolved focused
+          finding still binding in the focused accumulator. When the episode
+          closes — pass or exhaustion — report `passed=false` so the delta
+          while-loop runs the next delta round (or, after the fifth delta
+          round, exits spent to the recap).
+
+      The 3-round plan, 5-round delta, and 5-round-per-episode focused caps
+      remain bounded circuit breakers. If ANY cap is reached while any
+      substantiated finding remains unresolved — in either accumulator —
+      preserve every unresolved finding and record the delta review as
+      FAILED/non-converged, with no success and no merge recommendation.
+      Delta-review non-convergence is the major review failure: the recap's
+      final recommendation states whether the loop was converging and needs
+      more iterations, or why it is failing to converge. Never extend a loop
+      merely to chase optional improvements.
 
       Cross-cutting rules (complete as stated):
       - Skill loads are whitelisted: this workflow may load ONLY
@@ -3713,6 +3923,9 @@ steps:
         (final: passed={{plan_passed}})
       - Delta fresheyes log:  {{workspace.logs_dir}}/fresheyes-delta.md
         (final: passed={{delta_passed}})
+      - Focused fresheyes log: {{workspace.logs_dir}}/fresheyes-focused.md
+        (only when the focused loop ran; carries per-episode
+        `episode <N> started|completed <ISO-8601 UTC>` boundary lines)
       - Execution notes:      {{execute_result.execution_notes}}
         (tasks completed: {{execute_result.tasks_completed}} of
         {{execute_result.total_tasks}}; final whole-branch review verdict:
@@ -3720,13 +3933,15 @@ steps:
       - Worktree: {{workspace.worktree_path}} on branch {{workspace.branch}};
         original fork point: {{workspace.base_ref}}; plan: {{plan.plan_path}}.
 
-      Note if either fresheyes loop hit its iteration cap WITHOUT passing (plan
-      cap 3, delta cap 5) — that means it exited FAILED/non-converged, not a
-      clean PASS. A plan-loop non-convergence is a footnote (one line, per the
-      ending rules below); a delta-loop non-convergence is the major review
-      failure. List every unresolved substantiated finding carried in the
-      durable review logs. No success and no merge recommendation are permitted
-      while any such finding remains unresolved.
+      Note if any fresheyes loop hit its iteration cap WITHOUT passing (plan
+      cap 3, delta cap 5, focused cap 5 rounds per episode) — that means it
+      exited FAILED/non-converged, not a clean PASS. A plan-loop
+      non-convergence is a footnote (one line, per the ending rules below); a
+      delta-loop non-convergence is the major review failure. List every
+      unresolved substantiated finding carried in the durable review logs,
+      including the focused log's accumulator when the focused loop ran. No
+      success and no merge recommendation are permitted while any such finding
+      remains unresolved.
 
       Write the recap as plain, low-jargon prose (the user reads these to decide
       what to do next — favor clarity over ceremony). The recap OPENS with the
@@ -3758,7 +3973,9 @@ steps:
         failures left unfixed. Read the entries from the progress ledger:
         `(cd {{workspace.worktree_path}} && cat "$(git rev-parse --git-path sdd)/progress.md")`.
       - Delta review (fresheyes): how many rounds, final verdict, notable
-        findings cleared, and every unresolved substantiated finding.
+        findings cleared, and every unresolved substantiated finding. When the
+        focused loop ran, include its episode count, its total rounds across
+        episodes, and the last episode's verdict.
 
       ## Results
       <Compute each stage's elapsed wall-clock time from its `started` and
@@ -3768,11 +3985,23 @@ steps:
       shows `incomplete`. These spans include time spent waiting on reviewers
       and delegated agents.
 
-      The Rounds and Verdict columns apply only to the two fresheyes loops;
+      The Rounds and Verdict columns apply only to the fresheyes loops;
       every other stage shows `—`. Rounds is the recorded review round count
       with an `x` suffix (`2x`, `3x`); Verdict is `converged` when the loop
-      ended PASSED and `not converged` otherwise. Format the table as plain
-      text, columns aligned with spaces, inside a fenced block, e.g.:
+      ended PASSED and `not converged` otherwise.
+
+      When the focused loop ran, give it one subordinate row directly under
+      Delta review, indented two spaces and named `focused`: Rounds shows
+      `<E> episodes, <M>x` — the episode count and the total focused rounds —
+      and Verdict shows the last episode's outcome, `converged` when it passed
+      back to the delta loop and `not converged` when it exhausted its rounds
+      with binding findings. The row's Time is the sum of the episode spans
+      recorded as `episode <N> started|completed` lines in the focused log,
+      formatted like a stage; an episode with `started` but no `completed`
+      shows `incomplete`. Episode time is inside the Delta review row's span —
+      that row still shows all of Stage 5 — and Total sums the six stage rows
+      only. Format the table as plain text, columns aligned with spaces,
+      inside a fenced block, e.g.:
 
       Stage          Time     Rounds  Verdict
       Plan           23m      —       —
@@ -3782,6 +4011,18 @@ steps:
       Delta review   1h 36m   3x      converged
       Recap          2m       —       —
       Total          5h 54m
+
+      With a focused loop that ran two episodes:
+
+      Stage          Time     Rounds           Verdict
+      Plan           23m      —                —
+      Load-bearing   41m      —                —
+      Plan review    58m      2x               converged
+      Execution      2h 14m   —                —
+      Delta review   2h 03m   4x               converged
+        focused      37m      2 episodes, 7x   converged
+      Recap          2m       —                —
+      Total          5h 59m
       >
 
       ## In plain terms, here's what got built
@@ -3804,12 +4045,18 @@ steps:
       ## Suggested next steps
       <the branch was intentionally NOT merged or finished. Offer the standard
       finishing options — merge the branch locally, push and open a PR, keep
-      iterating, or discard — and name the worktree/branch so the user can act.>
+      iterating, or discard — only when the delta fresheyes loop passed and no
+      substantiated finding from any review loop (including a focused episode)
+      remains unresolved, and name the worktree/branch so the user can act.
+      When the delta loop did not pass or any substantiated finding remains
+      unresolved, lead with clearing the remaining findings and do not
+      recommend merging or opening a pull request as ready for review.>
 
       Review-failure ending (mandatory, conditional):
-      - If delta_passed is not 'true' (current value: {{delta_passed}}), the
-        recap MUST END with a clearly set-apart warning block that cannot be
-        missed, in this style:
+      - If delta_passed is not 'true' (current value: {{delta_passed}}), or any
+        substantiated finding from any review loop (including a focused
+        episode) remains unresolved, the recap MUST END with a clearly
+        set-apart warning block that cannot be missed, in this style:
 
         !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
         !!! WARNING: THE FINAL CODE DID NOT PASS INDEPENDENT REVIEW
@@ -3820,22 +4067,27 @@ steps:
 
         Read every unresolved substantiated finding, including carried findings
         from earlier iterations, from
-        {{workspace.logs_dir}}/fresheyes-delta.md and describe EACH one in a
-        single line of plain language a non-programmer can follow (what is
-        wrong and what it could affect — no jargon). One line per issue.
+        {{workspace.logs_dir}}/fresheyes-delta.md — and from
+        {{workspace.logs_dir}}/fresheyes-focused.md when the focused loop ran —
+        and describe EACH one in a single line of plain language a
+        non-programmer can follow (what is wrong and what it could affect — no
+        jargon). One line per issue. An exhausted focused episode whose
+        findings all reached final dispositions does not by itself trigger
+        this warning; the delta loop's pass covers the cleared state.
         In this case, "Suggested next steps" must NOT recommend merging — lead
         with fixing the listed issues instead — and the final recommendation
         must include a convergence analysis: read
-        {{workspace.logs_dir}}/fresheyes-delta.md round by round
-        (blocking-finding counts, finding severities, and whether cleared
-        findings stayed cleared). If findings grew fewer and less severe
-        across rounds, say the loop is converging and recommend more review
-        iterations as the next step. If they held flat, grew, or oscillated,
-        say the loop is failing to converge, state the apparent reason — a
-        recurring root cause the fixes never touch, fixes that trade one
-        finding for another, or a requirement the change cannot satisfy — and
-        recommend the matching corrective step, such as revising the plan or
-        clarifying the request, rather than more blind iterations.
+        {{workspace.logs_dir}}/fresheyes-delta.md — and
+        {{workspace.logs_dir}}/fresheyes-focused.md when the focused loop ran —
+        round by round (blocking-finding counts, finding severities, and
+        whether cleared findings stayed cleared). If findings grew fewer and
+        less severe across rounds, say the loop is converging and recommend
+        more review iterations as the next step. If they held flat, grew, or
+        oscillated, say the loop is failing to converge, state the apparent
+        reason — a recurring root cause the fixes never touch, fixes that
+        trade one finding for another, or a requirement the change cannot
+        satisfy — and recommend the matching corrective step, such as revising
+        the plan or clarifying the request, rather than more blind iterations.
       - If plan_passed is not 'true' (current value: {{plan_passed}}), treat
         the plan review's non-convergence as a footnote: add exactly one line
         after the stage bullets in "What happened at each stage" — "* The plan
@@ -3843,22 +4095,10 @@ steps:
         which covers the final code, governs the run." — and give it no other
         emphasis: the plan verdict alone never withholds next-step choices,
         never lowers the run's status, and never triggers the warning block.
-      - If delta_passed is 'true': no warning block — end normally.
+      - If delta_passed is 'true' and no substantiated finding remains
+        unresolved in any review log: no warning block — end normally.
 
       Write the full recap to {{workspace.logs_dir}}/recap.md.
-
-      Close out the plan: when every plan task completed, add one marker line
-      to the committed plan at {{plan.plan_path}}, directly under its title:
-
-      > Executed <YYYY-MM-DD> against <full-sha>; the source tree supersedes all
-      > code and patch listings in this document. Only the `## User Request`
-      > block, Goal, Architecture, Global Constraints, and task intent remain
-      > authoritative.
-
-      <full-sha> is the implementation HEAD before this commit. Commit the
-      marker alone with a focused message. On a partial or non-converged run,
-      omit the marker. Complete this step before reporting head_commit_sha in
-      the Outcome Block.
 
       ## Outcome Block
 
@@ -3881,8 +4121,10 @@ steps:
         (full lowercase 40-char SHA).
       - status "success" requires completed == total, gate result passed, the
         final delta verdict PASSED, and no unresolved substantiated finding in
-        either durable review log, with reason null. Record the plan verdict in
-        full; it never gates success by itself. A raw
+        any durable review log (plan, delta, or focused when it ran), with
+        reason null. The focused loop has no outcome-block field of its own; it
+        affects status only through unresolved findings. Record the plan verdict
+        in full; it never gates success by itself. A raw
         PASSED marker does not satisfy this while a carried finding remains
         unresolved. Anything else is status "non-convergence" with a non-empty
         reason naming the partial, blocked, failed-gate, failed-review, or
