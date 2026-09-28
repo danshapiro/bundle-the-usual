@@ -36,6 +36,15 @@
 # CHANGELOG
 # =============================================================================
 #
+# v3.19.0 (2026-09-27):
+#   - CHANGED (reviewer model): the default cross-model reviewer is pinned to
+#     GPT-6 Sol (`reviewer_model: "gpt-6-sol"`, was the `gpt-*` glob) at
+#     `xhigh` reasoning effort. New optional input `reviewer_reasoning_effort`
+#     (default "xhigh") is passed through the delegate call's
+#     provider_preferences `config` as the provider's `reasoning_effort` key,
+#     for plan, delta, and focused rounds alike; "" omits it. Matches
+#     skill-the-usual e226f7f and fresheyes 9997894.
+#
 # v3.18.0 (2026-08-24):
 #   - NEW (focused repair-review loop): when a delta fresheyes round returns
 #     FAILED and its repairs are committed, the repairs themselves are now
@@ -582,7 +591,7 @@
 
 name: "the-usual"
 description: "A standard dev workflow, fully self-contained: plan -> load-bearing -> fresheyes(plan, <=3x) -> execute (subagent-driven) -> fresheyes(delta, <=5x, with focused repair-review episodes after failed rounds) -> recap. All methodology is inlined in this file; this recipe is the canonical home."
-version: "3.18.0"
+version: "3.19.0"
 author: "recipes:recipe-author"
 tags: ["workflow", "planning", "tdd", "code-review", "fresheyes", "load-bearing"]
 
@@ -596,7 +605,8 @@ context:
 
   # ---- Optional inputs (cross-model reviewer; must differ from executor) ------
   reviewer_provider: "openai"   # executor is Anthropic -> reviewer defaults to a different family (GPT)
-  reviewer_model: "gpt-*"       # glob; latest GPT is auto-selected
+  reviewer_model: "gpt-6-sol"   # GPT-6 Sol; a glob such as "gpt-*" also works
+  reviewer_reasoning_effort: "xhigh"  # passed to the reviewer provider as its `reasoning_effort` config key; "" omits it
 
   # ---- Full-suite gate interval (periodic trigger during execution) -----------
   full_suite_commits: "10"      # run the full-suite gate at the next task boundary once this many commits (excluding docs/plans/) have landed since the last gate
@@ -2187,9 +2197,11 @@ steps:
               (markers excluded), and NOTHING more.
             - context_depth = "none"  (zero-context independence)
             - provider_preferences = [ { "provider": "{{reviewer_provider}}",
-                                         "model": "{{reviewer_model}}" } ]
-              (provider_preferences pins the reviewer model, so no model_role
-              is needed on this dispatch)
+                                         "model": "{{reviewer_model}}",
+                                         "config": { "reasoning_effort": "{{reviewer_reasoning_effort}}" } } ]
+              (provider_preferences pins the reviewer model and its reasoning
+              effort, so no model_role is needed on this dispatch; if
+              reviewer_reasoning_effort is empty, omit the "config" entry)
             - No specialized reviewer agent/persona — the persona is entirely in
               the instruction text. Use a general-purpose delegation target.
 
@@ -3684,9 +3696,11 @@ steps:
               (markers excluded), and NOTHING more.
             - context_depth = "none"
             - provider_preferences = [ { "provider": "{{reviewer_provider}}",
-                                         "model": "{{reviewer_model}}" } ]
-              (provider_preferences pins the reviewer model, so no model_role is
-              needed on this dispatch)
+                                         "model": "{{reviewer_model}}",
+                                         "config": { "reasoning_effort": "{{reviewer_reasoning_effort}}" } } ]
+              (provider_preferences pins the reviewer model and its reasoning
+              effort, so no model_role is needed on this dispatch; if
+              reviewer_reasoning_effort is empty, omit the "config" entry)
             - No specialized reviewer agent/persona; general-purpose target only.
           NOTE: the reviewer's working directory is NOT guaranteed to be the
           worktree, which is why the verbatim instruction below carries the

@@ -66,8 +66,8 @@ call returns or is interrupted.
 For an unchanged interruption, use
 `recipes(operation="resume", session_id=...)`. Changed direction is not an
 automatic resume decision. Surface guard messages and await the user's
-decision. `reviewer_provider` / `reviewer_model` remain optional cross-model
-review overrides.
+decision. `reviewer_provider` / `reviewer_model` / `reviewer_reasoning_effort`
+remain optional cross-model review overrides.
 
 ## Unattended Codex stage sessions
 

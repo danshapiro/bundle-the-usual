@@ -114,8 +114,9 @@ and never overrides a supplied current request.
   than the one doing the work — that separation is the point, and the run
   refuses to review with a same-family model rather than silently weakening
   independence. By default the work is done by whatever model your session
-  runs and reviews go to OpenAI; override with the `reviewer_provider` /
-  `reviewer_model` options if your setup is reversed.
+  runs and reviews go to OpenAI's GPT-6 Sol at `xhigh` reasoning effort;
+  override with the `reviewer_provider` / `reviewer_model` /
+  `reviewer_reasoning_effort` options if your setup is reversed.
 
 ## What's in this repository
 
