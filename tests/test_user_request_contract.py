@@ -74,8 +74,18 @@ def step_field(section: str, name: str) -> str | None:
 
 
 def step_command(section: str) -> str:
-    marker = "    command: |\n"
-    start = section.index(marker) + len(marker)
+    alias = re.search(r"(?m)^    command: \*(\w+)\s*$", section)
+    if alias:
+        anchor = re.search(
+            rf"(?m)^    command: &{re.escape(alias.group(1))} \|\n", RECIPE
+        )
+        if anchor is None:
+            raise ValueError(f"missing command anchor: {alias.group(1)}")
+        section = RECIPE[anchor.start():]
+    marker = re.search(r"(?m)^    command: (?:&\w+ )?\|\n", section)
+    if marker is None:
+        raise ValueError("missing Bash command")
+    start = marker.end()
     lines = []
     for line in section[start:].splitlines():
         if line.startswith("      "):
@@ -116,6 +126,13 @@ def render_bash_step(
     environment = os.environ.copy()
     for binding in set(re.findall(r"\{\{([^}]+)\}\}", command)):
         command = command.replace(f"{{{{{binding}}}}}", values[binding])
+    env_section = re.search(r"(?m)^    env:\s*\n((?:      .*\n)+)", section)
+    if env_section:
+        for variable, value in re.findall(
+            r'^      (\w+): "(.*)"$', env_section.group(1), re.MULTILINE
+        ):
+            if "{{" not in value:
+                environment[variable] = value
     for variable, binding in step_env_bindings(section).items():
         environment[variable] = values[binding]
     environment["PYTHONDONTWRITEBYTECODE"] = "1"
