@@ -69,6 +69,11 @@ automatic resume decision. Surface guard messages and await the user's
 decision. `reviewer_provider` / `reviewer_model` / `reviewer_reasoning_effort`
 remain optional cross-model review overrides.
 
+A terminal review-execution blocker is not an unchanged interruption. Surface
+the saved failure recap and its evidence. Do not retry exhausted routes or
+restart later work merely because review rounds remain. Only performed reviews
+count; inability to run a reviewer is not a finding about the code.
+
 ## Unattended Codex stage sessions
 
 Drive standalone-skill stage runs with the machine's default posture — pass no

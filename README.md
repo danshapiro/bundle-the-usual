@@ -22,9 +22,10 @@ stages, printing a big banner as it enters each long-running one:
    folder inside your project. Nothing you have is touched until you decide to
    merge the result. It also runs your project's full test suite once up front,
    so later checks can tell pre-existing failures from new ones.
-2. **Plan** — it writes a detailed, step-by-step implementation plan with
-   tests planned first, small tasks, exact file paths, and no hand-waving
-   ("add error handling later" is not allowed).
+2. **Plan** — it writes an implementation plan with exact interfaces, test
+   assertions, expected results, and a Review Focus section for likely
+   user-visible failures. It specifies decisions without transcribing the
+   entire implementation; vague placeholders are not allowed.
 3. **Check the risky assumptions** — it identifies the claims the plan quietly
    depends on ("this library supports X", "the config lives in Y") and
    verifies each with real evidence: running code, reading source, checking
@@ -34,17 +35,24 @@ stages, printing a big banner as it enters each long-running one:
    different company, with zero knowledge of the conversation so far (fresh
    eyes, no groupthink). Problems get fixed and re-reviewed, up to 3 rounds.
 5. **Build** — implementation happens one small task at a time, test-first,
-   with each task's output checked against the plan before moving on.
+   with independent requirements and quality checks. Task repairs have at
+   most five fix-and-review rounds. A whole-branch review follows the
+   full-suite gate; required findings cannot be parked as completed work.
 6. **Independent review of the result** — the complete set of changes gets
    the same fresh-eyes treatment, up to 5 rounds, until it passes.
 7. **Recap** — you get a report of what was found at every stage plus a
    jargon-free summary of what was built, and options for merging it. The
-   report ends with a machine-checkable summary block whose claims are
+   report opens with a machine-checkable summary block whose claims are
    verified against the run's records — a report that can't back up what it
    says fails the run.
 
-It only stops mid-run for serious problems (for example, anything that risks
-data loss). Everything else is handled and reported at the end.
+Ordinary findings are repaired within the review limits. If independent review
+cannot run, the workflow stops immediately and reports the blocker instead of
+spending the remaining review rounds on the same unavailable route. Only
+performed reviews count; a real report with a missing marker remains feedback,
+not a pass. Serious risks and other exhausted required paths also stop the run.
+A terminal blocker stays blocked on resume; it cannot fall through to later
+implementation, review, or full-suite work.
 
 ## Install
 
@@ -118,6 +126,15 @@ and never overrides a supplied current request.
   override with the `reviewer_provider` / `reviewer_model` /
   `reviewer_reasoning_effort` options if your setup is reversed.
 
+## Method version
+
+This version deliberately ports the standalone The Usual update at `d57367b`,
+based on Superpowers v7.0.0. All six methods and their required companion prompts
+are inlined in the recipe. Workspace setup and whole-branch review no longer
+load externally installed skills. Installed Superpowers updates therefore do
+not silently change this workflow. See [the maintenance mapping](docs/standalone-port.md)
+for the source commits, platform adaptations, and validation procedure.
+
 ## What's in this repository
 
 | Path | What it is |
@@ -126,11 +143,13 @@ and never overrides a supplied current request.
 | `context/the-usual-instructions.md` | Teaches the assistant to recognize "with the usual" |
 | `behaviors/the-usual.yaml` | The hook that loads those instructions into your sessions |
 | `scripts/validate-recap-outcome.py` | The deterministic checker the recap's summary block must pass |
-| `tests/` | Behavior tests: task-brief extraction, the recap validator, injection-safety of dynamic bash bindings, and the full-suite/recap-gate wiring |
+| `tests/` | Executable failure-routing guards, task-brief/review-package fixtures, recap validation, safe Bash bindings, and workflow wiring |
+| `docs/standalone-port.md` | Maintenance-only source and platform mapping; never a runtime override |
 | `bundle.md` | The package definition Amplifier installs |
 
 To run the tests: `python3 -m unittest discover -s tests` (zero dependencies).
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE) and the preserved upstream notice in
+[LICENSE.superpowers](LICENSE.superpowers).
