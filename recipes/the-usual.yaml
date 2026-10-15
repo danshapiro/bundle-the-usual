@@ -2226,12 +2226,18 @@ steps:
                       r'^\s*#+\s+Issues Found\s*$\n(.*?)(?=^\s*#{1,2}\s+\S|\Z)',
                       normalized, re.I | re.M | re.S,
                   )
-                  markers = re.findall(r'INDEPENDENT CODE REVIEW (PASSED|FAILED)', normalized, re.I)
+                  markers = re.findall(r'^\s*INDEPENDENT CODE REVIEW (PASSED|FAILED)\s*$', normalized, re.I | re.M)
                   if (not markers or set(m.upper() for m in markers) != {'PASSED'}
                       or not normalized.upper().endswith('INDEPENDENT CODE REVIEW PASSED')
                       or issues is None
-                      or re.search(r'^\s*(?:[-*+]\s+|\d+[.)]\s+|#{3,6}\s+)?\[?(critical|major)(?=[\s:\]\-]|$)',
-                                   issues.group(1) if issues else '', re.I | re.M)):
+                      or any(
+                          re.search(r'^\s*(?:[-*+]\s+|\d+[.)]\s+|#{3,6}\s+)?\[?(critical|major)(?=[\s:\]\-]|$)', line, re.I)
+                          and not re.fullmatch(
+                              r'\s*(?:[-*+]\s+|\d+[.)]\s+|#{3,6}\s+)?\[?(?:critical|major)\]?\s*:\s*'
+                              r'(?:none\.?|0(?:\s+(?:issues|findings))?\.?)\s*', line, re.I,
+                          )
+                          for line in (issues.group(1).splitlines() if issues else [])
+                      )):
                       errors.append(f'{name}: invalid PASSED report')
                   if re.search(
                       r'^\s*(?:[-*]\s*)?(?:(?:I|we)\s+(?:cannot|can.t|could not|was unable to|were unable to)\s+'
@@ -2472,6 +2478,7 @@ steps:
           Use only the native delegate's supported route policy and the
           configured provider/model. Do not invent an external provider fallback
           or retry outside that policy. Otherwise call the delegate tool with:
+            - agent = "the-usual:step-runner" (the registered generic target).
             - instruction = the exact text between the BEGIN/END markers below
               (markers excluded), and NOTHING more.
             - context_depth = "none"  (zero-context independence)
@@ -5320,6 +5327,7 @@ steps:
           Use only the native delegate's supported route policy and the
           configured provider/model. Do not invent an external provider fallback
           or retry outside that policy. Otherwise call the delegate tool with:
+            - agent = "the-usual:step-runner" (the registered generic target).
             - instruction = the exact text between the BEGIN/END markers below
               (markers excluded), and NOTHING more.
             - context_depth = "none"

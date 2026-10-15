@@ -288,6 +288,23 @@ class ReviewExecutionFailureTest(unittest.TestCase):
         self.assertEqual(0, result.returncode, result.stderr)
         self.assertEqual(['plan-delegate', 'execute-plan'], self.events)
 
+    def test_valid_pass_accepts_quoted_markers_and_absent_severity_findings(self):
+        reports = (
+            '## Issues Found\nNone.\n## Summary\n'
+            'The parser now handles the literal `INDEPENDENT CODE REVIEW FAILED`.\n'
+            'INDEPENDENT CODE REVIEW PASSED',
+            '## Issues Found\n- **Critical**: none.\n- **Major**: none.\n'
+            '## Summary\nNo blocking issues remain.\nINDEPENDENT CODE REVIEW PASSED',
+        )
+        for report in reports:
+            with self.subTest(report=report):
+                self.setUp()
+                receipt = self.receipt('plan', 'PASSED', 1, report=report)
+                result = self.loop('plan', [self.fixture('plan', receipt)])
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual(['plan-delegate', 'execute-plan'], self.events)
+                self.assertFalse((self.logs / 'review-execution-blocker.json').exists())
+
     def test_execution_failure_preserves_existing_gate_and_recap_evidence(self):
         # A review outage must not rewrite evidence of verification that ran.
         previous_recap = self.logs / 'recap.md'
