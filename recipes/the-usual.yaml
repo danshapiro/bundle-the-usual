@@ -614,6 +614,8 @@ context:
   # ---- Loop-state flags (managed via update_context; do not set at runtime) ---
   plan_passed: "false"          # set true when the plan clears fresheyes
   delta_passed: "false"         # set true when the delta clears fresheyes
+  plan_execution_blocked: "false"
+  delta_execution_blocked: "false"
 
   # ---- Shared scope rule (single canonical definition) ------------------------
   # Every step below splices this in verbatim, then continues with its own
@@ -2059,17 +2061,198 @@ steps:
   # substituted. The delegated reviewer receives that text as its ENTIRE
   # instruction — nothing added, nothing removed.
   # ===========================================================================
+  - id: "fresheyes-plan-resume-guard"
+    type: "bash"
+    env:
+      LOGS_DIR: "{{workspace.logs_dir}}"
+      WORKTREE: "{{workspace.worktree_path}}"
+      REVIEW_TARGET: "plan"
+      REVIEW_PHASE: "pre"
+      REVIEW_RESULT: "{}"
+      REVIEW_BLOCKED: "false"
+      REVIEW_PASSED: "false"
+    command: &review_execution_guard |
+      set -euo pipefail
+      python3 - <<'PY'
+      import json
+      import os
+      from pathlib import Path
+      import re
+      import sys
+
+      logs = Path(os.environ['LOGS_DIR'])
+      logs.mkdir(parents=True, exist_ok=True)
+      target = os.environ['REVIEW_TARGET']
+      phase = os.environ['REVIEW_PHASE']
+      blocker_path = logs / 'review-execution-blocker.json'
+      errors, receipts = [], {}
+
+      def read(path):
+          try:
+              value = json.loads(path.read_text(encoding='utf-8'))
+              if not isinstance(value, dict):
+                  raise ValueError('expected object')
+              return value
+          except (OSError, ValueError) as error:
+              errors.append(f'{path.name}: invalid or unreadable evidence ({type(error).__name__})')
+              return {}
+
+      def save(path, value):
+          temporary = path.with_suffix('.tmp')
+          temporary.write_text(json.dumps(value, indent=2) + '\n', encoding='utf-8')
+          temporary.replace(path)
+
+      def check(value, name, cap):
+          rounds = value.get('rounds_completed')
+          verdict = value.get('verdict')
+          if type(rounds) is not int or not 0 <= rounds <= cap:
+              errors.append(f'{name}: invalid completed count')
+          elif (rounds == 0) != (verdict == 'NOT_RUN'):
+              errors.append(f'{name}: count/verdict mismatch')
+          if verdict not in ('PASSED', 'FAILED', 'NO_MARKER', 'NOT_RUN'):
+              errors.append(f'{name}: invalid last completed verdict')
+          if any(value.get(key) not in ('true', 'false') for key in ('passed', 'execution_blocked')):
+              errors.append(f'{name}: invalid loop flags')
+          if type(value.get('blocking_count')) is not int or value['blocking_count'] < 0:
+              errors.append(f'{name}: invalid finding count')
+          if value.get('passed') == 'true' and (
+              verdict != 'PASSED' or value.get('execution_blocked') != 'false'
+              or value.get('blocking_count') != 0
+          ):
+              errors.append(f'{name}: false success')
+          if value.get('execution_blocked') == 'true':
+              if not value.get('blocker_reason') or value.get('blocked_target') not in ('plan', 'delta', 'focused'):
+                  errors.append(f'{name}: missing blocker identity/reason')
+              evidence = value.get('evidence_paths')
+              if not isinstance(evidence, list) or not evidence or not all(
+                  isinstance(path, str) and Path(path).is_file() for path in evidence
+              ):
+                  errors.append(f'{name}: missing execution-attempt evidence')
+          elif value.get('blocked_target') or value.get('blocker_reason'):
+              errors.append(f'{name}: contradictory blocker state')
+          if rounds and type(rounds) is int:
+              path = value.get('report_path')
+              if not isinstance(path, str) or not path or not Path(path).is_file():
+                  errors.append(f'{name}: missing completed report')
+              elif verdict == 'PASSED':
+                  try:
+                      report = Path(path).read_text(encoding='utf-8')
+                  except (OSError, UnicodeError):
+                      errors.append(f'{name}: unreadable completed report')
+                      return
+                  normalized = report.replace('**', '').strip()
+                  issues = re.search(
+                      r'^\s*#+\s+Issues Found\s*$\n(.*?)(?=^\s*#{1,2}\s+\S|\Z)',
+                      normalized, re.I | re.M | re.S,
+                  )
+                  markers = re.findall(r'INDEPENDENT CODE REVIEW (PASSED|FAILED)', normalized, re.I)
+                  if (not markers or set(m.upper() for m in markers) != {'PASSED'}
+                      or not normalized.upper().endswith('INDEPENDENT CODE REVIEW PASSED')
+                      or issues is None
+                      or re.search(r'^\s*(?:[-*+]\s+|\d+[.)]\s+|#{3,6}\s+)?\[?(critical|major)(?=[\s:\]\-]|$)',
+                                   issues.group(1) if issues else '', re.I | re.M)):
+                      errors.append(f'{name}: invalid PASSED report')
+                  if re.search(
+                      r'^\s*(?:[-*]\s*)?(?:(?:I|we)\s+(?:cannot|can.t|could not|was unable to|were unable to)\s+'
+                      r'(?:perform|complete|conduct)\s+(?:a\s+|the\s+)?(?:meaningful\s+|independent\s+)?review\b'
+                      r'|(?:I|we)\s+(?:cannot|can.t|could not)\s+review\b'
+                      r'|unable to (?:review|perform (?:a\s+|the\s+)?(?:meaningful\s+)?review)\b)',
+                      normalized, re.I | re.M,
+                  ):
+                      errors.append(f'{name}: refusal cannot pass')
+
+      blocker = read(blocker_path) if blocker_path.exists() else None
+      for name, cap in (('plan', 3), ('delta', 5), ('focused', 25)):
+          path = logs / f'fresheyes-{name}-result.json'
+          if path.exists():
+              receipts[name] = read(path)
+              check(receipts[name], name, cap)
+      if phase == 'post':
+          saved = receipts.get(target)
+          try:
+              returned = json.loads(os.environ['REVIEW_RESULT'])
+          except ValueError:
+              returned = None
+          if saved is None or returned != saved:
+              errors.append(f'{target}: missing receipt or returned/persisted state mismatch')
+          if saved and (saved.get('execution_blocked') != os.environ['REVIEW_BLOCKED']
+                        or saved.get('passed') != os.environ['REVIEW_PASSED']):
+              errors.append(f'{target}: engine/receipt flag mismatch')
+      blocked = [value for value in receipts.values() if value.get('execution_blocked') == 'true']
+      if blocker is None and not blocked and not errors:
+          sys.exit(0)
+
+      # A guard-detected failure is durable too: replay must not dispatch again.
+      if blocker is None:
+          source = blocked[0] if blocked else {}
+          blocker = {
+              'target': source.get('blocked_target', target),
+              'reason': source.get('blocker_reason') or '; '.join(errors),
+              'attempted_routes': [],
+              'delegate_status': 'see execution-attempt evidence' if blocked else 'guard-invalid-state',
+              'evidence_paths': source.get('evidence_paths', []),
+          }
+          save(blocker_path, blocker)
+      if errors:
+          save(logs / 'review-guard-errors.json', {'errors': errors})
+      reason = f"{blocker.get('target', target)} review execution blocked: {blocker.get('reason', 'invalid terminal evidence')}"
+      if errors:
+          reason += '; guard state errors: ' + '; '.join(errors)
+      # A blocked operation is not a completed workflow. Report only available facts;
+      # preserve earlier recap/gate evidence instead of fabricating a normal outcome.
+      lines = ['# WORKFLOW STOPPED — INDEPENDENT REVIEW EXECUTION BLOCKED', '', reason, '']
+      for name, label in (('plan', 'Plan'), ('delta', 'Delta'), ('focused', 'Focused')):
+          value = receipts.get(name)
+          if value is None:
+              lines.append(f'{label} review: no completed-review receipt available; no count inferred.')
+              continue
+          count, verdict = value.get('rounds_completed'), value.get('verdict')
+          if type(count) is int and count >= 0 and verdict in ('PASSED', 'FAILED', 'NO_MARKER', 'NOT_RUN'):
+              lines.append(f'{label} review: {count} completed; last verdict {verdict}.')
+          else:
+              lines.append(f'{label} review: receipt invalid; see retained evidence.')
+      execute_path = logs / 'execute-result.json'
+      if execute_path.exists():
+          execution = read(execute_path)
+          completed, total = execution.get('tasks_completed'), execution.get('total_tasks')
+          if type(completed) is int and type(total) is int and 0 <= completed <= total:
+              lines.append(f'Execution tasks: {completed} of {total} completed.')
+          else:
+              lines.append('Execution task counts unavailable; no totals inferred.')
+      else:
+          lines.append('Execution task counts unavailable; no totals inferred.')
+      lines.extend([
+          '', 'Attempted routes: ' + json.dumps(blocker.get('attempted_routes', [])),
+          'Blocker evidence: ' + str(blocker_path),
+      ])
+      paths = blocker.get('evidence_paths', [])
+      if isinstance(paths, list):
+          lines.extend(str(path) for path in paths)
+      lines.extend([
+          '', 'No full-suite gate was run by this guard; earlier verification evidence is unchanged.',
+          'No further implementation, review, repair, or full-suite work is authorized.',
+      ])
+      diagnostic_path = logs / 'review-execution-failure.md'
+      diagnostic = '\n'.join(lines) + '\n'
+      diagnostic_path.write_text(diagnostic, encoding='utf-8')
+      print(diagnostic)
+      print(f'FATAL: {reason}. Failure report: {diagnostic_path}', file=sys.stderr)
+      sys.exit(1)
+      PY
+    on_error: "fail"
+
   - id: "fresheyes-plan"
     # The agent that executes this step's instructions (this stage's worker).
     agent: "the-usual:step-runner"
     timeout: 864000
     output: "fresheyes_plan_result"
     parse_json: true
-    while_condition: "{{plan_passed}} != 'true'"
+    while_condition: "{{plan_passed}} != 'true' and {{plan_execution_blocked}} != 'true'"
     max_while_iterations: 3
-    break_when: "{{plan_passed}} == 'true'"
+    break_when: "{{plan_passed}} == 'true' or {{plan_execution_blocked}} == 'true' or {{fresheyes_plan_result.verdict}} == 'PASSED'"
     update_context:
       plan_passed: "{{fresheyes_plan_result.passed}}"
+      plan_execution_blocked: "{{fresheyes_plan_result.execution_blocked}}"
     prompt: |
       CRITICAL OUTPUT CONTRACT — read first. Your FINAL message must contain
       exactly the JSON block specified below — this is a verbatim copy of
@@ -2081,33 +2264,45 @@ steps:
       Return ONLY a JSON object (no prose, no fences) with exactly:
       {
         "passed": "true|false",
-        "verdict": "PASSED|FAILED|NO_MARKER",
+        "execution_blocked": "true|false",
+        "verdict": "PASSED|FAILED|NO_MARKER|NOT_RUN",
+        "rounds_completed": 0,
         "blocking_count": 0,
-        "summary": "<one-line summary of this iteration's findings>"
+        "blocked_target": "<plan|delta|focused on failure; otherwise empty>",
+        "blocker_reason": "<execution failure reason; otherwise empty>",
+        "evidence_paths": [],
+        "report_path": "<last completed report path; empty when NOT_RUN>",
+        "summary": "<one-line findings or execution-blocker summary>"
       }
 
-      Because your context may be compacted during this long task:
-      (a) ANCHOR — as your FIRST action, write this JSON skeleton with
-          placeholder values to {{workspace.logs_dir}}/pending-output.json and
-          add a todo item "FINAL ACT: emit completed output JSON as my last
-          message". Then UPDATE that file throughout the step as real values
-          become known (e.g. write verdict and passed as soon as the reviewer's
-          verdict marker is parsed), so at any moment it reflects your
-          best-known values.
-      (b) RECOVERY — immediately after the anchor setup, BEFORE starting
-          work, check whether {{workspace.logs_dir}}/pending-output.json already
-          exists with non-placeholder values, and inspect the workspace for a
-          previous attempt's artifacts: this iteration's entry in
-          {{workspace.logs_dir}}/fresheyes-plan.md and fix commits in the
-          worktree. If a previous attempt substantially completed the work,
-          VERIFY its artifacts rather than redoing them, complete whatever is
-          missing, and emit the contract JSON. A prior attempt's work counts —
-          only its missing receipt failed it. The artifacts are authoritative
-          over the anchor and your recollection: on any disagreement, correct
-          the anchor to match them — never rewrite or fabricate artifacts to
-          fit it.
-      (c) FINISH — when your work is done, read that file back, fill in real
-          values, and make the completed JSON your final message.
+      DURABLE RESULT / RECOVERY — before any dispatch, repair, commit, or gate,
+      inspect {{workspace.logs_dir}}/review-execution-blocker.json and all
+      fresheyes-*-result.json receipts. An execution blocker remains terminal
+      on resume; do not retry exhausted review routes or start later stages.
+      Only evidence recording and recap remain authorized after that stop.
+      Return this target's blocked receipt immediately, retaining its completed
+      count and last completed verdict (NOT_RUN/0 if none). If the blocker is
+      focused, return a blocked delta receipt without another delta dispatch.
+
+      Reconcile pending-output.json against the durable review logs, reports,
+      receipts, and fix commits BEFORE writing an anchor. Artifacts govern;
+      correct the cache, never the artifacts. Reuse a completed round whose
+      final response was lost; do not redo review or repairs. Count substantive
+      rounds in the log, not engine iterations or execution-attempt entries;
+      enforce the 3-round cap across replay/resume as well as this invocation.
+      If a prior valid PASSED round or the cap already closed this target,
+      emit its reconciled receipt without another dispatch.
+
+      Then maintain {{workspace.logs_dir}}/pending-output.json as the output
+      anchor and a todo "FINAL ACT: emit completed output JSON as my last
+      message". Persist the completed contract JSON atomically to
+      {{workspace.logs_dir}}/fresheyes-plan-result.json after each
+      substantive review (before remediation), update it after dispositions,
+      and read it back before returning the identical JSON. Persist failures
+      before returning too. Never replace a real receipt with a placeholder.
+      Focused reviews use fresheyes-focused-result.json with the same fields;
+      rounds_completed there is the total completed focused rounds across
+      episodes (at most 25); the log retains each episode's separate 5-round cap.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -2160,7 +2355,8 @@ steps:
         timestamp.
       - Append `plan-review completed <ts>` once, at the end of the round
         that ENDS the loop for this run: a round that records PASSED, or the
-        final allowed round (round 3). Never between rounds.
+        final allowed round (round 3), or execution failure (record that
+        closure reason). Never between rounds.
       - Never edit, rewrite, or delete existing lines.
 
       Worktree:  {{workspace.worktree_path}}
@@ -2188,11 +2384,13 @@ steps:
           logs dir (it lives outside the worktree tree by design).
 
       (b) DELEGATE THE REVIEW: first verify the configured reviewer is a
-          DIFFERENT model family than this session's (Anthropic) executor —
+          DIFFERENT model family than the actual executor for this session —
           {{reviewer_provider}}/{{reviewer_model}}. Independence is the point
           of this step, so a same-family selection is rejected, not run: treat
-          it as NO_MARKER (counts as NOT passed, consumes the round, and gets
-          the mandatory warning). Otherwise call the delegate tool with:
+          it as an execution blocker under (c), without consuming a round.
+          Use only the native delegate's supported route policy and the
+          configured provider/model. Do not invent an external provider fallback
+          or retry outside that policy. Otherwise call the delegate tool with:
             - instruction = the exact text between the BEGIN/END markers below
               (markers excluded), and NOTHING more.
             - context_depth = "none"  (zero-context independence)
@@ -2220,12 +2418,52 @@ steps:
       {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
 
-      (c) EXTRACT THE VERDICT: from the reviewer's returned text, find the marker
-          line matching (case-insensitive) `INDEPENDENT CODE REVIEW PASSED` or
-          `INDEPENDENT CODE REVIEW FAILED`. PASSED (or a report listing only
-          nit/cosmetic issues) => passed. FAILED, or NO marker found at all, or
-          CONFLICTING markers in one report, or a review the judge said it could
-          not perform => NOT passed.
+      (c) CHECK EXECUTION BEFORE COUNTING A ROUND: same-family refusal,
+          unavailable delegate/reviewer, exhausted supported routes, no report,
+          timeout, or explicit unable-to-review text is an execution failure,
+          even with a FAILED or PASSED marker. Apply this check before verdict
+          handling, round accounting, or remediation. Independent task/fix/
+          whole-branch review and context-isolated cross-family Fresh Eyes are
+          distinct gates; neither substitutes for the other or for self-review.
+
+          Preserve all reports, diagnostics, events, and existing artifacts.
+          Record the target, attempted native delegate routes, delegate status,
+          blocker reason, and evidence paths in an execution-attempt entry
+          separate from substantive round entries in the target's review log.
+          Do not manufacture findings, increment any review counter, replace
+          the last completed verdict, invoke repair, retry exhausted routes,
+          or substitute self-review. Use NOT_RUN with zero rounds when no
+          review completed; otherwise retain the last completed verdict and
+          count. Keep any partial observations as evidence, not repair work.
+          Write the target receipt with execution_blocked="true", passed="false",
+          blocked_target, blocker_reason, and evidence_paths. Then atomically
+          create {{workspace.logs_dir}}/review-execution-blocker.json containing
+          target, reason, attempted_routes (array), delegate_status, and
+          evidence_paths (array). Never clear or overwrite terminal evidence.
+          For focused failure also persist a blocked delta receipt, retaining
+          the delta's completed count, verdict, and last completed report.
+          Return the blocked step receipt IMMEDIATELY. Only evidence recording
+          and an unsuccessful recap may follow: no further implementation,
+          review, repair, or gate work. No full-suite work after execution failure.
+
+          For a performed review, format problems are logged as warnings and
+          never discard a substantive report or turn it into execution failure.
+          Count that review even with NO_MARKER and assess its findings under
+          the normal bounded review logic below. Save the full report under
+          the existing logs and set report_path before any remediation.
+          - PASSED: the report ends with INDEPENDENT CODE REVIEW PASSED, has an
+            Issues Found section, and lists no Critical or Major finding.
+          - FAILED: the report ends with INDEPENDENT CODE REVIEW FAILED, or it
+            ends with the PASSED marker but lists a Critical or Major finding.
+          - NO_MARKER: no final marker, conflicting markers, or a PASSED marker
+            without an Issues Found section. A nits-only report without the
+            marker is not a pass.
+          Every substantive report is feedback. Whatever its verdict or format,
+          record and assess every finding it contains. Only a PASSED verdict
+          successfully ends the loop; execution failure stops the workflow
+          separately. For ordinary receipts execution_blocked="false",
+          blocked_target and blocker_reason are empty. Set passed="true" only
+          for a valid PASSED verdict with all binding findings dispositioned.
 
       (d) DURABLY RECORD EVERY SEVERITY in
           `{{workspace.logs_dir}}/fresheyes-plan.md`. For every Critical,
@@ -2301,10 +2539,29 @@ steps:
       Return ONLY a JSON object (no prose, no fences) with exactly:
       {
         "passed": "true|false",
-        "verdict": "PASSED|FAILED|NO_MARKER",
+        "execution_blocked": "true|false",
+        "verdict": "PASSED|FAILED|NO_MARKER|NOT_RUN",
+        "rounds_completed": 0,
         "blocking_count": 0,
-        "summary": "<one-line summary of this iteration's findings>"
+        "blocked_target": "<plan|delta|focused on failure; otherwise empty>",
+        "blocker_reason": "<execution failure reason; otherwise empty>",
+        "evidence_paths": [],
+        "report_path": "<last completed report path; empty when NOT_RUN>",
+        "summary": "<one-line findings or execution-blocker summary>"
       }
+
+  - id: "fresheyes-plan-halt-guard"
+    type: "bash"
+    env:
+      LOGS_DIR: "{{workspace.logs_dir}}"
+      WORKTREE: "{{workspace.worktree_path}}"
+      REVIEW_TARGET: "plan"
+      REVIEW_PHASE: "post"
+      REVIEW_RESULT: "{{fresheyes_plan_result}}"
+      REVIEW_BLOCKED: "{{plan_execution_blocked}}"
+      REVIEW_PASSED: "{{plan_passed}}"
+    command: *review_execution_guard
+    on_error: "fail"
 
   # ===========================================================================
   # STEP 4 — Execute the plan (executing-plans + full subagent-driven-development
@@ -3549,17 +3806,31 @@ steps:
   # Same reviewer prompt as Step 3, inlined verbatim, with the scope already
   # substituted for the branch delta.
   # ===========================================================================
+  - id: "fresheyes-delta-resume-guard"
+    type: "bash"
+    env:
+      LOGS_DIR: "{{workspace.logs_dir}}"
+      WORKTREE: "{{workspace.worktree_path}}"
+      REVIEW_TARGET: "delta"
+      REVIEW_PHASE: "pre"
+      REVIEW_RESULT: "{}"
+      REVIEW_BLOCKED: "false"
+      REVIEW_PASSED: "false"
+    command: *review_execution_guard
+    on_error: "fail"
+
   - id: "fresheyes-delta"
     # The agent that executes this step's instructions (this stage's worker).
     agent: "the-usual:step-runner"
     timeout: 864000
     output: "fresheyes_delta_result"
     parse_json: true
-    while_condition: "{{delta_passed}} != 'true'"
+    while_condition: "{{delta_passed}} != 'true' and {{delta_execution_blocked}} != 'true'"
     max_while_iterations: 5
-    break_when: "{{delta_passed}} == 'true'"
+    break_when: "{{delta_passed}} == 'true' or {{delta_execution_blocked}} == 'true' or {{fresheyes_delta_result.verdict}} == 'PASSED'"
     update_context:
       delta_passed: "{{fresheyes_delta_result.passed}}"
+      delta_execution_blocked: "{{fresheyes_delta_result.execution_blocked}}"
     prompt: |
       CRITICAL OUTPUT CONTRACT — read first. Your FINAL message must contain
       exactly the JSON block specified below — this is a verbatim copy of
@@ -3571,33 +3842,45 @@ steps:
       Return ONLY a JSON object (no prose, no fences) with exactly:
       {
         "passed": "true|false",
-        "verdict": "PASSED|FAILED|NO_MARKER",
+        "execution_blocked": "true|false",
+        "verdict": "PASSED|FAILED|NO_MARKER|NOT_RUN",
+        "rounds_completed": 0,
         "blocking_count": 0,
-        "summary": "<one-line summary of this iteration's findings>"
+        "blocked_target": "<plan|delta|focused on failure; otherwise empty>",
+        "blocker_reason": "<execution failure reason; otherwise empty>",
+        "evidence_paths": [],
+        "report_path": "<last completed report path; empty when NOT_RUN>",
+        "summary": "<one-line findings or execution-blocker summary>"
       }
 
-      Because your context may be compacted during this long task:
-      (a) ANCHOR — as your FIRST action, write this JSON skeleton with
-          placeholder values to {{workspace.logs_dir}}/pending-output.json and
-          add a todo item "FINAL ACT: emit completed output JSON as my last
-          message". Then UPDATE that file throughout the step as real values
-          become known (e.g. write verdict and passed as soon as the reviewer's
-          verdict marker is parsed), so at any moment it reflects your
-          best-known values.
-      (b) RECOVERY — immediately after the anchor setup, BEFORE starting
-          work, check whether {{workspace.logs_dir}}/pending-output.json already
-          exists with non-placeholder values, and inspect the workspace for a
-          previous attempt's artifacts: this iteration's entry in
-          {{workspace.logs_dir}}/fresheyes-delta.md and fix commits in the
-          worktree. If a previous attempt substantially completed the work,
-          VERIFY its artifacts rather than redoing them, complete whatever is
-          missing, and emit the contract JSON. A prior attempt's work counts —
-          only its missing receipt failed it. The artifacts are authoritative
-          over the anchor and your recollection: on any disagreement, correct
-          the anchor to match them — never rewrite or fabricate artifacts to
-          fit it.
-      (c) FINISH — when your work is done, read that file back, fill in real
-          values, and make the completed JSON your final message.
+      DURABLE RESULT / RECOVERY — before any dispatch, repair, commit, or gate,
+      inspect {{workspace.logs_dir}}/review-execution-blocker.json and all
+      fresheyes-*-result.json receipts. An execution blocker remains terminal
+      on resume; do not retry exhausted review routes or start later stages.
+      Only evidence recording and recap remain authorized after that stop.
+      Return this target's blocked receipt immediately, retaining its completed
+      count and last completed verdict (NOT_RUN/0 if none). If the blocker is
+      focused, return a blocked delta receipt without another delta dispatch.
+
+      Reconcile pending-output.json against the durable review logs, reports,
+      receipts, and fix commits BEFORE writing an anchor. Artifacts govern;
+      correct the cache, never the artifacts. Reuse a completed round whose
+      final response was lost; do not redo review or repairs. Count substantive
+      rounds in the log, not engine iterations or execution-attempt entries;
+      enforce the 5-round cap across replay/resume as well as this invocation.
+      If a prior valid PASSED round or the cap already closed this target,
+      emit its reconciled receipt without another dispatch.
+
+      Then maintain {{workspace.logs_dir}}/pending-output.json as the output
+      anchor and a todo "FINAL ACT: emit completed output JSON as my last
+      message". Persist the completed contract JSON atomically to
+      {{workspace.logs_dir}}/fresheyes-delta-result.json after each
+      substantive review (before remediation), update it after dispositions,
+      and read it back before returning the identical JSON. Persist failures
+      before returning too. Never replace a real receipt with a placeholder.
+      Focused reviews use fresheyes-focused-result.json with the same fields;
+      rounds_completed there is the total completed focused rounds across
+      episodes (at most 25); the log retains each episode's separate 5-round cap.
 
       DELEGATION MANDATE (fixed policy — no discretion). Reason: this step
       agent's context is the scarcest resource in the pipeline; exploration
@@ -3661,7 +3944,8 @@ steps:
         timestamp.
       - Append `delta-review completed <ts>` once, at the end of the round
         that ENDS the loop for this run: a round that records PASSED, or the
-        final allowed round (round 5). Never between rounds.
+        final allowed round (round 5), or execution failure (record that
+        closure reason). Never between rounds.
       - Never edit, rewrite, or delete existing lines.
 
       Worktree:      {{workspace.worktree_path}}
@@ -3687,11 +3971,13 @@ steps:
           review. Do not commit anything under the logs dir.
 
       (b) DELEGATE THE REVIEW: first verify the configured reviewer is a
-          DIFFERENT model family than this session's (Anthropic) executor —
+          DIFFERENT model family than the actual executor for this session —
           {{reviewer_provider}}/{{reviewer_model}}. Independence is the point
           of this step, so a same-family selection is rejected, not run: treat
-          it as NO_MARKER (counts as NOT passed, consumes the round, and gets
-          the mandatory warning). Otherwise call the delegate tool with:
+          it as an execution blocker under (c), without consuming a round.
+          Use only the native delegate's supported route policy and the
+          configured provider/model. Do not invent an external provider fallback
+          or retry outside that policy. Otherwise call the delegate tool with:
             - instruction = the exact text between the BEGIN/END markers below
               (markers excluded), and NOTHING more.
             - context_depth = "none"
@@ -3724,11 +4010,52 @@ steps:
       {{fresheyes_reviewer_body}}
       ---------- END REVIEWER INSTRUCTION ----------
 
-      (c) EXTRACT THE VERDICT: find the marker line (case-insensitive)
-          `INDEPENDENT CODE REVIEW PASSED` or `INDEPENDENT CODE REVIEW FAILED`.
-          PASSED (or only nit/cosmetic issues) => passed. FAILED, no marker,
-          CONFLICTING markers in one report, or a review that could not be
-          performed => NOT passed.
+      (c) CHECK EXECUTION BEFORE COUNTING A ROUND: same-family refusal,
+          unavailable delegate/reviewer, exhausted supported routes, no report,
+          timeout, or explicit unable-to-review text is an execution failure,
+          even with a FAILED or PASSED marker. Apply this check before verdict
+          handling, round accounting, or remediation. Independent task/fix/
+          whole-branch review and context-isolated cross-family Fresh Eyes are
+          distinct gates; neither substitutes for the other or for self-review.
+
+          Preserve all reports, diagnostics, events, and existing artifacts.
+          Record the target, attempted native delegate routes, delegate status,
+          blocker reason, and evidence paths in an execution-attempt entry
+          separate from substantive round entries in the target's review log.
+          Do not manufacture findings, increment any review counter, replace
+          the last completed verdict, invoke repair, retry exhausted routes,
+          or substitute self-review. Use NOT_RUN with zero rounds when no
+          review completed; otherwise retain the last completed verdict and
+          count. Keep any partial observations as evidence, not repair work.
+          Write the target receipt with execution_blocked="true", passed="false",
+          blocked_target, blocker_reason, and evidence_paths. Then atomically
+          create {{workspace.logs_dir}}/review-execution-blocker.json containing
+          target, reason, attempted_routes (array), delegate_status, and
+          evidence_paths (array). Never clear or overwrite terminal evidence.
+          For focused failure also persist a blocked delta receipt, retaining
+          the delta's completed count, verdict, and last completed report.
+          Return the blocked step receipt IMMEDIATELY. Only evidence recording
+          and an unsuccessful recap may follow: no further implementation,
+          review, repair, or gate work. No full-suite work after execution failure.
+
+          For a performed review, format problems are logged as warnings and
+          never discard a substantive report or turn it into execution failure.
+          Count that review even with NO_MARKER and assess its findings under
+          the normal bounded review logic below. Save the full report under
+          the existing logs and set report_path before any remediation.
+          - PASSED: the report ends with INDEPENDENT CODE REVIEW PASSED, has an
+            Issues Found section, and lists no Critical or Major finding.
+          - FAILED: the report ends with INDEPENDENT CODE REVIEW FAILED, or it
+            ends with the PASSED marker but lists a Critical or Major finding.
+          - NO_MARKER: no final marker, conflicting markers, or a PASSED marker
+            without an Issues Found section. A nits-only report without the
+            marker is not a pass.
+          Every substantive report is feedback. Whatever its verdict or format,
+          record and assess every finding it contains. Only a PASSED verdict
+          successfully ends the loop; execution failure stops the workflow
+          separately. For ordinary receipts execution_blocked="false",
+          blocked_target and blocker_reason are empty. Set passed="true" only
+          for a valid PASSED verdict with all binding findings dispositioned.
 
       (d) DURABLY RECORD EVERY SEVERITY in
           `{{workspace.logs_dir}}/fresheyes-delta.md`. For every Critical,
@@ -3796,7 +4123,18 @@ steps:
           caps: neither loop's rounds count toward the other, and the delta
           loop never gains a sixth round.
 
-          Each focused round works like (b)-(e) above, with these differences:
+          Before each focused dispatch, check durable blocker evidence as in
+          RECOVERY. Each focused round applies (b), then the execution check in
+          (c) BEFORE counting, verdict handling, or repairs. On execution failure,
+          close the episode with its original started line and a completed line
+          naming execution failure, preserve focused and delta counts/verdicts,
+          persist both blocked receipts and terminal evidence, and return the
+          blocked DELTA step receipt immediately. Do not run another focused
+          or delta round, repair, or final full-suite gate.
+
+          Each performed focused round works like (b)-(e) above, except the
+          full-suite gate in (e) belongs only to the enclosing delta loop and
+          never runs inside a focused episode, with these other differences:
 
           - SCOPE: the reviewer instruction is the same BEGIN/END block, but
             its review sentence becomes:
@@ -3843,7 +4181,8 @@ steps:
             opens — a retried or recovered episode keeps its original `started`
             line, which is never rewritten — and one `episode <N> completed
             <ISO-8601 UTC>` line appended when the episode closes, whether by a
-            passing round or by exhaustion. Round entries sit between their
+            passing round, cap exhaustion, or execution failure; record the
+            closure reason. Round entries sit between their
             episode's boundary lines.
 
           A PASSED focused round ends the episode: it authorizes no further
@@ -3853,7 +4192,9 @@ steps:
           own findings receive recorded final dispositions without fixes —
           under the scope rule, with OPTIONAL available to Minor and Nit
           findings — and they never trigger another focused round. A focused
-          NO_MARKER consumes a focused round. After each focused FAILED round —
+          substantive NO_MARKER consumes a focused round; missing execution
+          does not. Assess its findings under (c)-(e). After each focused
+          FAILED round —
           including the fifth — disposition and repair the findings, verify
           with focused tests, and commit; after the fifth, no further focused
           round runs and the episode closes with every unresolved focused
@@ -3887,10 +4228,29 @@ steps:
       Return ONLY a JSON object (no prose, no fences) with exactly:
       {
         "passed": "true|false",
-        "verdict": "PASSED|FAILED|NO_MARKER",
+        "execution_blocked": "true|false",
+        "verdict": "PASSED|FAILED|NO_MARKER|NOT_RUN",
+        "rounds_completed": 0,
         "blocking_count": 0,
-        "summary": "<one-line summary of this iteration's findings>"
+        "blocked_target": "<plan|delta|focused on failure; otherwise empty>",
+        "blocker_reason": "<execution failure reason; otherwise empty>",
+        "evidence_paths": [],
+        "report_path": "<last completed report path; empty when NOT_RUN>",
+        "summary": "<one-line findings or execution-blocker summary>"
       }
+
+  - id: "fresheyes-delta-halt-guard"
+    type: "bash"
+    env:
+      LOGS_DIR: "{{workspace.logs_dir}}"
+      WORKTREE: "{{workspace.worktree_path}}"
+      REVIEW_TARGET: "delta"
+      REVIEW_PHASE: "post"
+      REVIEW_RESULT: "{{fresheyes_delta_result}}"
+      REVIEW_BLOCKED: "{{delta_execution_blocked}}"
+      REVIEW_PASSED: "{{delta_passed}}"
+    command: *review_execution_guard
+    on_error: "fail"
 
   # ===========================================================================
   # STEP 6 — Recap: per-stage findings + low-jargon summary + next steps
@@ -3933,6 +4293,9 @@ steps:
         (verified: {{load_bearing_result.verified_count}}, falsified:
         {{load_bearing_result.falsified_count}}; acceptable-path decisions:
         {{load_bearing_result.acceptable_decisions}})
+      - Execution blockers and per-target receipts:
+        {{workspace.logs_dir}}/review-execution-blocker.json and
+        {{workspace.logs_dir}}/fresheyes-*-result.json (when present).
       - Plan fresheyes log:   {{workspace.logs_dir}}/fresheyes-plan.md
         (final: passed={{plan_passed}})
       - Delta fresheyes log:  {{workspace.logs_dir}}/fresheyes-delta.md
@@ -3949,8 +4312,8 @@ steps:
 
       Note if any fresheyes loop hit its iteration cap WITHOUT passing (plan
       cap 3, delta cap 5, focused cap 5 rounds per episode) — that means it
-      exited FAILED/non-converged, not a clean PASS. A plan-loop
-      non-convergence is a footnote (one line, per the ending rules below); a
+      exited FAILED/non-converged, not a clean PASS. A capped substantive
+      plan-loop non-convergence is a footnote (one line, per the ending rules below); a
       delta-loop non-convergence is the major review failure. List every
       unresolved substantiated finding carried in the durable review logs,
       including the focused log's accumulator when the focused loop ran. No
@@ -4002,14 +4365,17 @@ steps:
       The Rounds and Verdict columns apply only to the fresheyes loops;
       every other stage shows `—`. Rounds is the recorded review round count
       with an `x` suffix (`2x`, `3x`); Verdict is `converged` when the loop
-      ended PASSED and `not converged` otherwise.
+      ended PASSED, `not converged` for substantive non-convergence, and
+      `execution blocked` for execution failure. Rounds count only completed
+      reviews; use zero and NOT_RUN when none completed.
 
       When the focused loop ran, give it one subordinate row directly under
       Delta review, indented two spaces and named `focused`: Rounds shows
       `<E> episodes, <M>x` — the episode count and the total focused rounds —
       and Verdict shows the last episode's outcome, `converged` when it passed
       back to the delta loop and `not converged` when it exhausted its rounds
-      with binding findings. The row's Time is the sum of the episode spans
+      with binding findings, or `execution blocked` when execution failed,
+      including with zero focused rounds. The row's Time is the sum of the episode spans
       recorded as `episode <N> started|completed` lines in the focused log,
       formatted like a stage; an episode with `started` but no `completed`
       shows `incomplete`. Episode time is inside the Delta review row's span —
@@ -4061,13 +4427,26 @@ steps:
       finishing options — merge the branch locally, push and open a PR, keep
       iterating, or discard — only when the delta fresheyes loop passed and no
       substantiated finding from any review loop (including a focused episode)
-      remains unresolved, and name the worktree/branch so the user can act.
-      When the delta loop did not pass or any substantiated finding remains
-      unresolved, lead with clearing the remaining findings and do not
-      recommend merging or opening a pull request as ready for review.>
+      remains unresolved, and no review execution blocker exists. Name the
+      worktree/branch so the user can act. After execution failure, lead with
+      the execution blocker and the evidence needed to resolve it. Do not
+      recommend more iterations on exhausted routes, claim readiness, or treat
+      the recap as authorization to resume work. For substantive review
+      non-convergence or unresolved findings without an execution blocker,
+      lead with clearing the remaining findings and do not recommend merging
+      or opening a pull request as ready for review.>
 
       Review-failure ending (mandatory, conditional):
-      - If delta_passed is not 'true' (current value: {{delta_passed}}), or any
+      - If any review execution failed, end with
+        `WARNING: WORKFLOW STOPPED — INDEPENDENT REVIEW EXECUTION BLOCKED`.
+        Name the target, blocker, and evidence; list only actual unresolved
+        findings, or state that none were recorded. Do not imply later stages
+        or reviews ran. Execution failure is not evidence of substantive
+        non-convergence. Analyze only reviews actually completed, and say when
+        there is insufficient evidence for a trend. Do not infer findings or
+        recommend retrying exhausted routes.
+      - When no execution failure occurred, if delta_passed is not 'true'
+        (current value: {{delta_passed}}), or any
         substantiated finding from any review loop (including a focused
         episode) remains unresolved, the recap MUST END with a clearly
         set-apart warning block that cannot be missed, in this style:
@@ -4102,15 +4481,18 @@ steps:
         trade one finding for another, or a requirement the change cannot
         satisfy — and recommend the matching corrective step, such as revising
         the plan or clarifying the request, rather than more blind iterations.
-      - If plan_passed is not 'true' (current value: {{plan_passed}}), treat
+      - If plan_passed is not 'true' (current value: {{plan_passed}}), the plan
+        completed its three substantive rounds, and no execution failure
+        occurred, treat
         the plan review's non-convergence as a footnote: add exactly one line
         after the stage bullets in "What happened at each stage" — "* The plan
         review did not converge within its three rounds; the delta review,
         which covers the final code, governs the run." — and give it no other
         emphasis: the plan verdict alone never withholds next-step choices,
         never lowers the run's status, and never triggers the warning block.
-      - If delta_passed is 'true' and no substantiated finding remains
-        unresolved in any review log: no warning block — end normally.
+      - If delta_passed is 'true', no substantiated finding remains unresolved
+        in any review log, and no review execution blocker exists: no warning
+        block — end normally.
 
       Write the full recap to {{workspace.logs_dir}}/recap.md.
 
@@ -4126,6 +4508,15 @@ steps:
         total={{execute_result.total_tasks}}
       - full_suite_gate.result: from the final-HEAD gate entry in the
         progress ledger — passed, failed, not-run, or blocked.
+      - Execution blockers: read review-execution-blocker.json and all
+        fresheyes-*-result.json receipts before claiming success. Count only
+        performed reviews; execution-attempt diagnostics contribute no round
+        or verdict. Preserve the last completed count/verdict, or NOT_RUN/0.
+        Any execution blocker requires non-convergence with its target, reason,
+        attempted routes, and evidence prominently reported. Do not recommend
+        merge, invent convergence activity, or run more work. The Bash failure
+        guard emits review-execution-failure.md with available facts instead of
+        inventing a normal Outcome Block for an interrupted workflow.
       - review_loops: rounds and final verdict from
         {{workspace.logs_dir}}/fresheyes-plan.md and
         {{workspace.logs_dir}}/fresheyes-delta.md. Verdicts: PASSED, FAILED,
@@ -4135,9 +4526,11 @@ steps:
         (full lowercase 40-char SHA).
       - status "success" requires completed == total, gate result passed, the
         final delta verdict PASSED, and no unresolved substantiated finding in
-        any durable review log (plan, delta, or focused when it ran), with
-        reason null. The focused loop has no outcome-block field of its own; it
-        affects status only through unresolved findings. Record the plan verdict
+        any durable review log (plan, delta, or focused when it ran), and no
+        review execution blocker, with reason null. The focused loop has no
+        outcome-block field of its own; execution failure there still blocks
+        success and is named in reason, without inventing a focused verdict.
+        Record the plan verdict
         in full; it never gates success by itself. A raw
         PASSED marker does not satisfy this while a carried finding remains
         unresolved. Anything else is status "non-convergence" with a non-empty
